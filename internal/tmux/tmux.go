@@ -164,11 +164,21 @@ func (t Tmux) KillSession(sessionID string) error {
 // AttachOrSwitch attaches to the session identified by sessionID, using
 // "switch-client" if already inside a tmux client (insideTmux), or
 // "attach-session" otherwise.
+//
+// The two branches go through different Runner methods on purpose.
+// "switch-client" only messages the already-running tmux server, so the
+// ordinary captured-output Run is fine. "attach-session" instead needs our
+// controlling terminal: its stdin must be a real tty, or tmux exits with
+// "open terminal failed: not a terminal" — so it goes through
+// RunInteractive, which inherits this process's real stdio.
+//
+// Either way this call takes the terminal over (until the user detaches or
+// switches away), so callers must persist any state they care about
+// *before* calling it — see mtcmd.saveAndAttach.
 func (t Tmux) AttachOrSwitch(sessionID string, insideTmux bool) error {
 	if insideTmux {
 		_, _, err := t.Runner.Run("tmux", "switch-client", "-t", sessionID)
 		return err
 	}
-	_, _, err := t.Runner.Run("tmux", "attach-session", "-t", sessionID)
-	return err
+	return t.Runner.RunInteractive("tmux", "attach-session", "-t", sessionID)
 }

@@ -318,6 +318,15 @@ func TestAttachOrSwitch_UsesSwitchClientWhenInsideTmux(t *testing.T) {
 	}
 }
 
+// TestAttachOrSwitch_UsesAttachSessionWhenNotInsideTmux also pins which
+// Runner method the attach branch uses. "tmux attach-session" needs its
+// stdin to be a real terminal; routed through the ordinary Run (captured
+// buffers, nil stdin) it fails with "open terminal failed: not a terminal",
+// so `mt <name>`, `mt pr` and `mt ls` could never attach from outside tmux.
+// Interactive: true is the proof it goes through RunInteractive, which
+// inherits this process's real stdio. (A unit test can't supply a real tty,
+// so the end of that path — RealRunner.RunInteractive handing over an
+// actual terminal — is only verifiable by running the built binary.)
 func TestAttachOrSwitch_UsesAttachSessionWhenNotInsideTmux(t *testing.T) {
 	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
 	tm := Tmux{Runner: fake}
@@ -327,9 +336,19 @@ func TestAttachOrSwitch_UsesAttachSessionWhenNotInsideTmux(t *testing.T) {
 	}
 
 	wantCalls := []executil.Call{
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(fake.Calls, wantCalls) {
-		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+		t.Errorf("Calls = %+v, want %+v (attach-session must use RunInteractive, not Run)", fake.Calls, wantCalls)
+	}
+}
+
+func TestAttachOrSwitch_AttachSessionErrorPropagates(t *testing.T) {
+	wantErr := errors.New("open terminal failed: not a terminal")
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Err: wantErr}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.AttachOrSwitch("$3", false); !errors.Is(err, wantErr) {
+		t.Errorf("AttachOrSwitch error = %v, want %v", err, wantErr)
 	}
 }
