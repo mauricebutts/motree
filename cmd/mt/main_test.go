@@ -120,6 +120,26 @@ func TestMain_NoArgs_PrintsUsageAndExitsNonZero(t *testing.T) {
 	}
 }
 
+// TestMain_SpawnPromptStartingWithDash_RejectsWithExactMessage locks down
+// the exact-text error `runSpawn` prints when a spawn prompt starts with
+// "-" (ported from the original bash do_spawn's
+// `case "$prompt" in -*) echo "mt: <prompt> must come before any flags"`),
+// so a future edit can't silently drop or reword it without a test
+// failing. This check runs before runSpawn ever touches git/tmux/state, so
+// no stubbing is needed beyond the usual baseEnv.
+func TestMain_SpawnPromptStartingWithDash_RejectsWithExactMessage(t *testing.T) {
+	res := runMt(t, t.TempDir(), baseEnv(t), "spawn", "demo-session", "-not-a-prompt")
+
+	if res.exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+
+	want := "mt: <prompt> must come before any flags"
+	if !strings.Contains(res.stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", res.stderr, want)
+	}
+}
+
 // writeStub writes an executable shell script named name into dir,
 // containing body (its argv is available as $1, $2, ... as usual).
 func writeStub(t *testing.T, dir, name, body string) {

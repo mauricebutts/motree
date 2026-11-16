@@ -314,7 +314,16 @@ func runSpawn(args []string) error {
 	if err := mtcmd.Spawn(d, name, prompt, *baseBranch, *description, cwd, now); err != nil {
 		return err
 	}
-	return d.State.Save(state.StateFilePath())
+	if err := d.State.Save(state.StateFilePath()); err != nil {
+		return err
+	}
+
+	// Unlike Create/PR, Spawn never attaches — so without this, a
+	// successful spawn gives the user no feedback at all. Matches the
+	// original bash do_spawn's trailing "echo \"mt: spawned session
+	// '$name'\"".
+	fmt.Printf("mt: spawned session '%s'\n", name)
+	return nil
 }
 
 // runPR implements `mt pr <pr_number>` — no flags, just the positional PR
