@@ -244,6 +244,11 @@ func TestRm_NoFzfInstalled_ReturnsError(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	d.State.Sessions = []state.Session{{Name: "myfeature"}}
 
+	// Rm must not print this message to stderr itself: its caller
+	// (cmd/mt/main.go) prints every non-nil returned error via
+	// "mt: %v\n" already, so an explicit Fprintln here would put the same
+	// line on stderr twice. Returning the message as the error's text is
+	// the only print.
 	var err error
 	stderr := captureStderr(t, func() {
 		err = Rm(d, "/tmp")
@@ -252,8 +257,12 @@ func TestRm_NoFzfInstalled_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Rm returned nil error, want an error — fzf isn't installed, and mt rm (unlike mt ls) has no plain-listing fallback")
 	}
-	if stderr != "mt rm needs fzf installed to pick a session.\n" {
-		t.Errorf("stderr = %q, want %q", stderr, "mt rm needs fzf installed to pick a session.\n")
+	wantErrMsg := "mt rm needs fzf installed to pick a session."
+	if err.Error() != wantErrMsg {
+		t.Errorf("Rm error = %q, want %q", err.Error(), wantErrMsg)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty — Rm must not print the message itself (its caller prints the returned error)", stderr)
 	}
 	if len(tmuxRunner.Calls) != 0 {
 		t.Errorf("tmux Calls = %+v, want none", tmuxRunner.Calls)

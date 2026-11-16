@@ -44,8 +44,15 @@ func Rm(d *Deps, cwd string) error {
 	}
 
 	if _, err := fzfLookPath("fzf"); err != nil {
-		fmt.Fprintln(os.Stderr, "mt rm needs fzf installed to pick a session.")
-		return errors.New("mt rm needs fzf installed to pick a session")
+		// Unlike the "no sessions tracked yet" branch above (which prints
+		// directly and returns nil, since mt ls's equivalent case has no
+		// error to report), this path must surface a non-nil error so the
+		// caller exits non-zero — matching the original bash do_rm's
+		// `return 1`. main.go's dispatch prints every returned error via
+		// "mt: %v", so the message is returned, not also printed here
+		// directly: printing it both ways would put the same line on
+		// stderr twice.
+		return errors.New("mt rm needs fzf installed to pick a session.")
 	}
 
 	rows := RenderRows(d.State)
