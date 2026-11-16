@@ -236,12 +236,25 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 	args := fzfutil.BuildArgs(mtBinaryPath, listen, socketPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	var waitForPoller func()
 	if listen {
-		fzfutil.StartReloadPoller(ctx, runner, mtBinaryPath, socketPath)
+		waitForPoller = fzfutil.StartReloadPoller(ctx, runner, mtBinaryPath, socketPath)
 	}
-	defer cancel()
 
+	// cancel (and wait) is called explicitly right here, immediately after
+	// Run returns — not deferred to Ls's own return — so the poller's
+	// lifetime stays scoped tightly around the blocking Run call and
+	// never overlaps AttachOrRecreate's (possibly multi-call) rebuild of
+	// a dead session. Waiting (not just cancelling) matters: cancel only
+	// stops *future* poller ticks, so without waiting, a curl call
+	// already in flight when cancel fires could still be running
+	// concurrently with AttachOrRecreate's tmux calls against the same
+	// runner.
 	selectedName, runErr := fzfutil.Run(runner, rows, args)
+	cancel()
+	if waitForPoller != nil {
+		waitForPoller()
+	}
 	if runErr != nil {
 		return runErr
 	}

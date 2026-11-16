@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mauricebutts/motree/internal/executil"
+	"github.com/mauricebutts/motree/internal/fzfutil"
 	"github.com/mauricebutts/motree/internal/state"
 	"github.com/mauricebutts/motree/internal/statusfile"
 )
@@ -29,6 +32,27 @@ func forceFzfUnavailable(t *testing.T) {
 	orig := fzfLookPath
 	fzfLookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
 	t.Cleanup(func() { fzfLookPath = orig })
+}
+
+// forceFzfAvailable overrides fzfLookPath so Ls proceeds past its "fzf
+// isn't installed" check deterministically, independent of whether fzf
+// actually happens to be installed on whatever machine runs `go test`.
+func forceFzfAvailable(t *testing.T) {
+	t.Helper()
+	orig := fzfLookPath
+	fzfLookPath = func(file string) (string, error) { return "/usr/local/bin/" + file, nil }
+	t.Cleanup(func() { fzfLookPath = orig })
+}
+
+// forceCurlAvailableForLs overrides fzfutil.CurlLookPath (exported for
+// exactly this cross-package purpose) so SupportsListen's curl check
+// deterministically succeeds, independent of whether curl actually
+// happens to be installed on whatever machine runs `go test`.
+func forceCurlAvailableForLs(t *testing.T) {
+	t.Helper()
+	orig := fzfutil.CurlLookPath
+	fzfutil.CurlLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	t.Cleanup(func() { fzfutil.CurlLookPath = orig })
 }
 
 // captureStderr runs fn with os.Stderr redirected, returning whatever it
@@ -392,6 +416,87 @@ func TestLs_NoFzfInstalled_FallsBackToPlainListing(t *testing.T) {
 	}
 	if len(tmuxRunner.Calls) != 0 {
 		t.Errorf("tmux Calls = %+v, want none — plain fallback never touches tmux", tmuxRunner.Calls)
+	}
+}
+
+// TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate is a regression
+// test for a bug where Ls stopped the reload poller via "defer cancel()",
+// so it kept firing curl against fzf's (already-exited) --listen socket
+// for the entire duration of AttachOrRecreate, not just around the
+// blocking fzfutil.Run call. It forces listen=true (fzf/curl both
+// "available", fzf --help reporting --listen support), makes the fzf
+// invocation itself (the "sh -c" call Run shells out through) block for
+// over a poller tick so the poller fires at least once, then makes
+// AttachOrRecreate's final "attach-session" tmux call also block for over
+// a poller tick. If the poller isn't cancelled until Ls returns (the old
+// bug), a curl call lands inside the attach-session window; if it's
+// cancelled right after Run returns (the fix), none does.
+func TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate(t *testing.T) {
+	setStatusHome(t)
+	forceFzfAvailable(t)
+	forceCurlAvailableForLs(t)
+
+	var mu sync.Mutex
+	var curlTimes []time.Time
+	var attachStart, attachEnd time.Time
+
+	tmuxRunner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			switch call.Name {
+			case "fzf":
+				return "    --listen=[addr]  Start HTTP server\n", "", nil
+			case "sh":
+				// This is fzfutil.Run's "sh -c 'fzf ...' < rowsfile" call.
+				// Block long enough for the poller's 1s ticker to fire at
+				// least once before the picker "returns" a selection.
+				time.Sleep(1200 * time.Millisecond)
+				return "myfeature\tsome label\tsome desc\n", "", nil
+			case "curl":
+				mu.Lock()
+				curlTimes = append(curlTimes, time.Now())
+				mu.Unlock()
+				return "", "", nil
+			case "tmux":
+				if len(call.Args) > 0 && call.Args[0] == "list-sessions" {
+					return "$3:myfeature\n", "", nil
+				}
+				if len(call.Args) > 0 && call.Args[0] == "attach-session" {
+					attachStart = time.Now()
+					time.Sleep(1200 * time.Millisecond)
+					attachEnd = time.Now()
+					return "", "", nil
+				}
+			}
+			return "", "", nil
+		},
+	}
+
+	gitRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{
+			Name:  "myfeature",
+			Repos: []state.Repo{{RepoPath: "/Users/x/Projects/foo", WorktreePath: t.TempDir()}},
+		},
+	}
+
+	if err := Ls(d, "/usr/local/bin/mt", "/tmp", false); err != nil {
+		t.Fatalf("Ls returned error: %v", err)
+	}
+
+	if attachStart.IsZero() {
+		t.Fatalf("AttachOrRecreate's attach-session was never called")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(curlTimes) == 0 {
+		t.Fatalf("poller never fired a curl call — test didn't give it enough time to tick")
+	}
+	for _, ct := range curlTimes {
+		if ct.After(attachStart) && ct.Before(attachEnd) {
+			t.Errorf("poller fired a curl call at %v, inside AttachOrRecreate's attach-session window [%v, %v] — reload poller must be cancelled before AttachOrRecreate runs, not deferred to Ls's return", ct, attachStart, attachEnd)
+		}
 	}
 }
 

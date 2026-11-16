@@ -12,21 +12,21 @@ import (
 	"github.com/mauricebutts/motree/internal/executil"
 )
 
-// forceCurlUnavailable overrides curlLookPath so SupportsListen's curl
+// forceCurlUnavailable overrides CurlLookPath so SupportsListen's curl
 // check deterministically fails, independent of whether curl actually
 // happens to be installed on whatever machine runs `go test`.
 func forceCurlUnavailable(t *testing.T) {
 	t.Helper()
-	orig := curlLookPath
-	curlLookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
-	t.Cleanup(func() { curlLookPath = orig })
+	orig := CurlLookPath
+	CurlLookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+	t.Cleanup(func() { CurlLookPath = orig })
 }
 
 func forceCurlAvailable(t *testing.T) {
 	t.Helper()
-	orig := curlLookPath
-	curlLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
-	t.Cleanup(func() { curlLookPath = orig })
+	orig := CurlLookPath
+	CurlLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	t.Cleanup(func() { CurlLookPath = orig })
 }
 
 func TestBuildArgs_WithoutListen_OmitsListenFlag(t *testing.T) {

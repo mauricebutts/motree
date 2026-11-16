@@ -15,12 +15,17 @@ import (
 	"github.com/mauricebutts/motree/internal/tmux"
 )
 
-// curlLookPath resolves "curl" to an executable's path, exactly like
+// CurlLookPath resolves "curl" to an executable's path, exactly like
 // exec.LookPath (its default value). It's a package-level var rather than
 // a direct exec.LookPath call so SupportsListen is deterministically
-// testable, the same trick ghutil.LookPath uses for "gh" — reassign the
-// original value back (e.g. via t.Cleanup) after overriding it.
-var curlLookPath = exec.LookPath
+// testable, the same trick ghutil.LookPath uses for "gh" — tests (in this
+// package and in callers like mtcmd, which need to force listen=true to
+// test Ls's live-reload path) can reassign it to force the "curl is/isn't
+// on PATH" result, instead of SupportsListen's result silently depending
+// on whether curl happens to be installed on whatever machine runs
+// `go test`. Reassign the original value back (e.g. via t.Cleanup) after
+// overriding it.
+var CurlLookPath = exec.LookPath
 
 // SupportsListen reports whether this machine's fzf can run `mt ls`'s
 // live-reload mechanism: curl must be on PATH (the poller shells out to
@@ -29,7 +34,7 @@ var curlLookPath = exec.LookPath
 // `command -v curl >/dev/null 2>&1 && fzf --help 2>&1 | grep -q -- '--listen'`
 // check.
 func SupportsListen(runner executil.Runner) bool {
-	if _, err := curlLookPath("curl"); err != nil {
+	if _, err := CurlLookPath("curl"); err != nil {
 		return false
 	}
 
@@ -143,10 +148,20 @@ func isExitStatus1(err error) bool {
 // `( while :; do sleep 1; curl ...; done ) &` background poller. The
 // goroutine runs until ctx is cancelled; StartReloadPoller itself returns
 // immediately. Callers control the goroutine's lifetime precisely around
-// their blocking Run call via ctx's cancel func (typically `defer cancel()`
-// right after starting the poller, before calling Run).
-func StartReloadPoller(ctx context.Context, runner executil.Runner, mtBinaryPath, socketPath string) {
+// their blocking Run call: call ctx's cancel func right after Run returns,
+// then call the returned wait func, before doing anything else with
+// runner (e.g. starting AttachOrRecreate's tmux calls). Cancelling ctx
+// only stops *future* ticks — a curl call already in flight when cancel
+// is called keeps running concurrently with whatever the caller does
+// next, racing on runner, unless the caller also waits for wait() to
+// return, which blocks until the goroutine (and any curl call it was
+// mid-flight on) has fully exited.
+func StartReloadPoller(ctx context.Context, runner executil.Runner, mtBinaryPath, socketPath string) (wait func()) {
+	done := make(chan struct{})
+
 	go func() {
+		defer close(done)
+
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
@@ -161,4 +176,6 @@ func StartReloadPoller(ctx context.Context, runner executil.Runner, mtBinaryPath
 			}
 		}
 	}()
+
+	return func() { <-done }
 }
