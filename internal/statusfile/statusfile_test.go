@@ -144,3 +144,139 @@ func TestWrite_ForUntrackedCwd_StillSucceeds(t *testing.T) {
 		t.Errorf("readStatus returned status=%q, want %q", readStat, status)
 	}
 }
+
+func TestPublicWrite_RoundTrip(t *testing.T) {
+	// Save original env var
+	oldEnv, exists := os.LookupEnv("MOTREE_STATE_FILE")
+	defer func() {
+		if exists {
+			os.Setenv("MOTREE_STATE_FILE", oldEnv)
+		} else {
+			os.Unsetenv("MOTREE_STATE_FILE")
+		}
+	}()
+
+	// Use a temporary directory for the state file
+	tmpDir := t.TempDir()
+	stateFilePath := filepath.Join(tmpDir, ".motree")
+	os.Setenv("MOTREE_STATE_FILE", stateFilePath)
+
+	cwd := "/home/user/project"
+	status := Running
+
+	// Write using public API
+	err := Write(cwd, status)
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Read using public API
+	readStat, found, err := Read(cwd)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if !found {
+		t.Errorf("Read returned found=false, want true")
+	}
+	if readStat != status {
+		t.Errorf("Read returned status=%q, want %q", readStat, status)
+	}
+
+	// Clear using public API
+	err = Clear(cwd)
+	if err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
+
+	// Verify it's gone
+	readStat, found, err = Read(cwd)
+	if err != nil {
+		t.Fatalf("Read after Clear failed: %v", err)
+	}
+	if found {
+		t.Errorf("Read after Clear returned found=true, want false")
+	}
+}
+
+func TestPublicWrite_ForUntrackedCwd_StillSucceeds(t *testing.T) {
+	// Save original env var
+	oldEnv, exists := os.LookupEnv("MOTREE_STATE_FILE")
+	defer func() {
+		if exists {
+			os.Setenv("MOTREE_STATE_FILE", oldEnv)
+		} else {
+			os.Unsetenv("MOTREE_STATE_FILE")
+		}
+	}()
+
+	// Use a temporary directory for the state file
+	tmpDir := t.TempDir()
+	stateFilePath := filepath.Join(tmpDir, ".motree")
+	os.Setenv("MOTREE_STATE_FILE", stateFilePath)
+
+	// Use an untracked cwd (doesn't exist in any filesystem)
+	cwd := "/some/deeply/nested/untracked/path/that/doesnt/exist"
+	status := Waiting
+
+	// Write using public API should still succeed
+	err := Write(cwd, status)
+	if err != nil {
+		t.Fatalf("Write for untracked cwd failed: %v", err)
+	}
+
+	// Verify we can read it back using public API
+	readStat, found, err := Read(cwd)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if !found {
+		t.Errorf("Read returned found=false, want true")
+	}
+	if readStat != status {
+		t.Errorf("Read returned status=%q, want %q", readStat, status)
+	}
+}
+
+func TestDir_ReturnsStateFilePathPlusSuffix(t *testing.T) {
+	// Save original env var
+	oldEnv, exists := os.LookupEnv("MOTREE_STATE_FILE")
+	defer func() {
+		if exists {
+			os.Setenv("MOTREE_STATE_FILE", oldEnv)
+		} else {
+			os.Unsetenv("MOTREE_STATE_FILE")
+		}
+	}()
+
+	expectedPath := "/tmp/test_state"
+	os.Setenv("MOTREE_STATE_FILE", expectedPath)
+
+	got := Dir()
+	want := expectedPath + "-status"
+
+	if got != want {
+		t.Errorf("Dir() = %q, want %q", got, want)
+	}
+}
+
+func TestPathFor_CombinesDirAndEscapedCwd(t *testing.T) {
+	// Save original env var
+	oldEnv, exists := os.LookupEnv("MOTREE_STATE_FILE")
+	defer func() {
+		if exists {
+			os.Setenv("MOTREE_STATE_FILE", oldEnv)
+		} else {
+			os.Unsetenv("MOTREE_STATE_FILE")
+		}
+	}()
+
+	os.Setenv("MOTREE_STATE_FILE", "/tmp/test_state")
+
+	cwd := "/home/user/project"
+	got := PathFor(cwd)
+	want := filepath.Join("/tmp/test_state-status", "-home-user-project")
+
+	if got != want {
+		t.Errorf("PathFor(%q) = %q, want %q", cwd, got, want)
+	}
+}

@@ -2,9 +2,11 @@ package statusfile
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mauricebutts/motree/internal/state"
 )
@@ -89,7 +91,7 @@ func writeStatus(statusDir string, cwd string, status Status) error {
 	content := string(status)
 
 	// Write to temp file first with unique suffix for atomic write
-	tmpPath := path + ".tmp"
+	tmpPath := path + ".tmp." + fmt.Sprintf("%d%d", time.Now().UnixNano(), rand.Intn(1000000))
 	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write temp status file: %w", err)
 	}
