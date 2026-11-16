@@ -262,7 +262,7 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 		return nil
 	}
 
-	return AttachOrRecreate(d, selectedName, insideTmux)
+	return AttachOrRecreate(d, selectedName, insideTmux, time.Now().Unix())
 }
 
 // newFzfSocketPath generates a unique, not-yet-existing path for fzf's
@@ -290,16 +290,26 @@ func newFzfSocketPath() (string, error) {
 // just recreates the tmux session/windows/panes) otherwise, pruning any
 // repo whose worktree directory is gone from tracking as it goes. Ported
 // from the original bash motree.sh's mt_attach_or_recreate.
-func AttachOrRecreate(d *Deps, name string, insideTmux bool) error {
+//
+// now is stamped onto the session's LastOpened in BOTH branches (exactly
+// where bash's mt_attach_or_recreate calls mt_upsert_session), so that
+// picking a session out of `mt ls` actually floats it to the top of the
+// most-recently-opened ordering next time.
+func AttachOrRecreate(d *Deps, name string, insideTmux bool, now int64) error {
 	sessionID, err := d.Tmux.FindSessionID(name)
 	if err != nil {
 		return err
 	}
 	if sessionID != "" {
-		return d.Tmux.AttachOrSwitch(sessionID, insideTmux)
+		d.State.UpsertSession(name, "", now)
+		return saveAndAttach(d, sessionID, insideTmux)
 	}
 
 	var rebuiltSessionID string
+	// ReposFor hands back a copy, which this loop depends on: RemoveRepo
+	// below rewrites the session's own Repos slice in place, so ranging
+	// over the live slice would shift the iteration out from under itself
+	// and silently skip the repo after each pruned one.
 	for _, repo := range d.State.ReposFor(name) {
 		if _, statErr := os.Stat(repo.WorktreePath); statErr != nil {
 			fmt.Fprintf(os.Stderr, "mt: skipping '%s' — worktree is gone, pruning it from tracking\n", repo.RepoPath)
@@ -324,5 +334,6 @@ func AttachOrRecreate(d *Deps, name string, insideTmux bool) error {
 		return fmt.Errorf("mt: nothing left to recreate for session '%s'", name)
 	}
 
-	return d.Tmux.AttachOrSwitch(rebuiltSessionID, insideTmux)
+	d.State.UpsertSession(name, "", now)
+	return saveAndAttach(d, rebuiltSessionID, insideTmux)
 }

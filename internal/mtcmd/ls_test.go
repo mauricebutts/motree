@@ -501,6 +501,8 @@ func TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate(t *testing.T) {
 }
 
 func TestAttachOrRecreate_LiveSession_JustAttaches(t *testing.T) {
+	setStatusHome(t)
+
 	gitRunner := &executil.FakeRunner{}
 	tmuxRunner := &executil.FakeRunner{
 		Queue: []executil.Response{
@@ -509,22 +511,80 @@ func TestAttachOrRecreate_LiveSession_JustAttaches(t *testing.T) {
 		},
 	}
 	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{{Name: "myfeature", Description: "fix the thing", LastOpened: 100}}
 
-	if err := AttachOrRecreate(d, "myfeature", false); err != nil {
+	if err := AttachOrRecreate(d, "myfeature", false, 4242); err != nil {
 		t.Fatalf("AttachOrRecreate returned error: %v", err)
 	}
 
+	// attach-session must go through RunInteractive (Interactive: true),
+	// not the captured-buffer Run every other tmux call uses: tmux needs a
+	// real tty on its stdin or it dies with "open terminal failed: not a
+	// terminal".
 	wantTmuxCalls := []executil.Call{
 		{Name: "tmux", Args: []string{"list-sessions", "-F", "#{session_id}:#{session_name}"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v (live session must just attach, no rebuild)", tmuxRunner.Calls, wantTmuxCalls)
+	}
+
+	if got := d.State.Sessions[0].LastOpened; got != 4242 {
+		t.Errorf("LastOpened = %d, want 4242 — attaching to a live session must bump it", got)
+	}
+	if got := d.State.Sessions[0].Description; got != "fix the thing" {
+		t.Errorf("Description = %q, want it preserved by the empty-description upsert", got)
+	}
+
+	// And it must already be on disk by the time we attach, since attaching
+	// hands the terminal (and possibly this process's life) to tmux.
+	saved := readSavedState(t)
+	if len(saved.Sessions) != 1 || saved.Sessions[0].LastOpened != 4242 {
+		t.Errorf("saved state = %+v, want the bumped LastOpened persisted before attach", saved.Sessions)
+	}
+}
+
+// TestAttachOrRecreate_SavesStateBeforeAttaching pins the ordering that
+// finding #1/#2 turn on: the state file must already contain the bump by
+// the time the attach-session call is issued, because attaching takes the
+// terminal over and anything cmd/mt/main.go would save afterwards may never
+// run.
+func TestAttachOrRecreate_SavesStateBeforeAttaching(t *testing.T) {
+	setStatusHome(t)
+
+	var savedAtAttach *state.State
+	tmuxRunner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			if len(call.Args) > 0 && call.Args[0] == "list-sessions" {
+				return "$3:myfeature\n", "", nil
+			}
+			if len(call.Args) > 0 && call.Args[0] == "attach-session" {
+				st, err := state.Load(state.StateFilePath())
+				if err == nil {
+					savedAtAttach = st
+				}
+			}
+			return "", "", nil
+		},
+	}
+	d := newDeps(&executil.FakeRunner{}, tmuxRunner)
+	d.State.Sessions = []state.Session{{Name: "myfeature", LastOpened: 100}}
+
+	if err := AttachOrRecreate(d, "myfeature", false, 777); err != nil {
+		t.Fatalf("AttachOrRecreate returned error: %v", err)
+	}
+
+	if savedAtAttach == nil {
+		t.Fatalf("state file did not exist yet when attach-session ran — Save must happen first")
+	}
+	if len(savedAtAttach.Sessions) != 1 || savedAtAttach.Sessions[0].LastOpened != 777 {
+		t.Errorf("state on disk at attach time = %+v, want LastOpened 777 already persisted", savedAtAttach.Sessions)
 	}
 }
 
 func TestAttachOrRecreate_DeadSession_RebuildsWindowsPruningMissingWorktrees(t *testing.T) {
 	setClaudeHome(t)
+	setStatusHome(t)
 
 	missingWorktree := filepath.Join(t.TempDir(), "gone")
 	survivingWorktree := t.TempDir()
@@ -557,7 +617,7 @@ func TestAttachOrRecreate_DeadSession_RebuildsWindowsPruningMissingWorktrees(t *
 
 	var err error
 	stderr := captureStderr(t, func() {
-		err = AttachOrRecreate(d, "myfeature", false)
+		err = AttachOrRecreate(d, "myfeature", false, 9999)
 	})
 	if err != nil {
 		t.Fatalf("AttachOrRecreate returned error: %v", err)
@@ -582,10 +642,122 @@ func TestAttachOrRecreate_DeadSession_RebuildsWindowsPruningMissingWorktrees(t *
 		{Name: "tmux", Args: []string{"split-window", "-v", "-t", windowTarget + ".1", "-c", survivingWorktree}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".0", "nvim .", "C-m"}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".2", "claude", "C-m"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$5"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$5"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)
+	}
+
+	sess := d.State.Sessions[0]
+	if sess.LastOpened != 9999 {
+		t.Errorf("LastOpened = %d, want 9999 — the rebuild branch must bump it too", sess.LastOpened)
+	}
+	saved := readSavedState(t)
+	if len(saved.Sessions) != 1 || saved.Sessions[0].LastOpened != 9999 || len(saved.Sessions[0].Repos) != 1 {
+		t.Errorf("saved state = %+v, want the bump and the pruned repo list persisted before attach", saved.Sessions)
+	}
+}
+
+// TestAttachOrRecreate_DeadSession_ThreeRepos_VisitsEverySurvivorExactlyOnce
+// is the regression test for the slice-aliasing bug: ReposFor used to hand
+// back the session's own backing slice, and RemoveRepo (called from inside
+// this loop for repos whose worktree is gone) rewrites that slice in place.
+// With the FIRST of three repos pruned, the loop's view shifted underneath
+// it — the second repo was skipped entirely and the third processed twice.
+// Two-repo fixtures happen not to expose this, hence three here.
+func TestAttachOrRecreate_DeadSession_ThreeRepos_VisitsEverySurvivorExactlyOnce(t *testing.T) {
+	setClaudeHome(t)
+	setStatusHome(t)
+
+	missingWorktree := filepath.Join(t.TempDir(), "gone")
+	aliceWorktree := t.TempDir()
+	bobWorktree := t.TempDir()
+
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			if call.Name != "tmux" || len(call.Args) == 0 {
+				return "", "", nil
+			}
+			switch call.Args[0] {
+			case "list-sessions":
+				return "", "", errors.New("no server running")
+			case "new-session":
+				return "$7\n", "", nil
+			}
+			return "", "", nil
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{
+			Name: "myfeature",
+			Repos: []state.Repo{
+				{RepoPath: "/Users/x/Projects/gone-repo", WorktreePath: missingWorktree},
+				{RepoPath: "/Users/x/Projects/alice", WorktreePath: aliceWorktree},
+				{RepoPath: "/Users/x/Projects/bob", WorktreePath: bobWorktree},
+			},
+		},
+	}
+
+	var err error
+	captureStderr(t, func() { err = AttachOrRecreate(d, "myfeature", false, 1) })
+	if err != nil {
+		t.Fatalf("AttachOrRecreate returned error: %v", err)
+	}
+
+	// Each surviving repo must get exactly one window: "alice" as the new
+	// session's initial window, "bob" via new-window. The old bug produced
+	// "alice" twice and "bob" never.
+	var windowsBuilt []string
+	for _, call := range tmuxRunner.Calls {
+		if call.Name != "tmux" || len(call.Args) == 0 {
+			continue
+		}
+		switch call.Args[0] {
+		case "new-session":
+			windowsBuilt = append(windowsBuilt, call.Args[5]) // -n <window>
+		case "new-window":
+			windowsBuilt = append(windowsBuilt, call.Args[4]) // -n <window>
+		}
+	}
+	wantWindows := []string{"alice", "bob"}
+	if !reflect.DeepEqual(windowsBuilt, wantWindows) {
+		t.Errorf("windows built = %v, want %v (every surviving repo visited exactly once)", windowsBuilt, wantWindows)
+	}
+
+	remaining := d.State.ReposFor("myfeature")
+	if len(remaining) != 2 || remaining[0].RepoPath != "/Users/x/Projects/alice" || remaining[1].RepoPath != "/Users/x/Projects/bob" {
+		t.Errorf("ReposFor(myfeature) = %+v, want exactly the two surviving repos", remaining)
+	}
+}
+
+// TestReposFor_ResultIsNotAliasedToStateBackingSlice is the unit-level
+// counterpart to the regression test above: mutating state through
+// RemoveRepo must not disturb a slice ReposFor already handed out.
+func TestReposFor_ResultIsNotAliasedToStateBackingSlice(t *testing.T) {
+	st := &state.State{
+		Sessions: []state.Session{
+			{
+				Name: "myfeature",
+				Repos: []state.Repo{
+					{RepoPath: "/r/a"}, {RepoPath: "/r/b"}, {RepoPath: "/r/c"},
+				},
+			},
+		},
+	}
+
+	snapshot := st.ReposFor("myfeature")
+	st.RemoveRepo("myfeature", "/r/a")
+
+	want := []string{"/r/a", "/r/b", "/r/c"}
+	if len(snapshot) != len(want) {
+		t.Fatalf("snapshot length = %d, want %d — ReposFor must return a copy", len(snapshot), len(want))
+	}
+	for i, w := range want {
+		if snapshot[i].RepoPath != w {
+			t.Errorf("snapshot[%d] = %q, want %q — RemoveRepo must not rewrite an already-returned slice", i, snapshot[i].RepoPath, w)
+		}
 	}
 }
 
@@ -606,7 +778,7 @@ func TestAttachOrRecreate_NoRepoWorktreesLeft_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := captureStderrAndReturnErr(t, func() error { return AttachOrRecreate(d, "myfeature", false) })
+	err := captureStderrAndReturnErr(t, func() error { return AttachOrRecreate(d, "myfeature", false, 1) })
 	if err == nil {
 		t.Fatalf("AttachOrRecreate returned nil error, want an error — no worktree survived")
 	}

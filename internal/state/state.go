@@ -115,10 +115,15 @@ func (s *State) EnsureRepo(sessionName, repoPath, worktreePath string) {
 	}
 }
 
+// ReposFor returns a copy of sessionName's repos, never the session's own
+// backing slice. The copy is load-bearing: RemoveRepo rewrites that slice
+// in place, so a caller ranging over the result while pruning as it goes
+// (mtcmd.AttachOrRecreate does exactly that) would otherwise have the
+// iteration shift underneath it and silently skip repos.
 func (s *State) ReposFor(sessionName string) []Repo {
 	for _, sess := range s.Sessions {
 		if sess.Name == sessionName {
-			return sess.Repos
+			return append([]Repo(nil), sess.Repos...)
 		}
 	}
 	return []Repo{}

@@ -13,6 +13,36 @@ import (
 	"github.com/mauricebutts/motree/internal/tmux"
 )
 
+// TestMain points MOTREE_STATE_FILE at a throwaway temp file for the whole
+// package, unconditionally. Several commands here now flush state to
+// state.StateFilePath() themselves (saveAndAttach before every attach,
+// RemoveSession before its kill-session), so without this a test that
+// forgets its own isolation would write to the developer's real ~/.motree.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "mtcmd-state-*")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("MOTREE_STATE_FILE", filepath.Join(dir, ".motree")); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// readSavedState loads whatever the package's MOTREE_STATE_FILE currently
+// holds, for asserting that a command actually persisted to disk (not just
+// mutated its in-memory State).
+func readSavedState(t *testing.T) *state.State {
+	t.Helper()
+	st, err := state.Load(state.StateFilePath())
+	if err != nil {
+		t.Fatalf("state.Load(%q): %v", state.StateFilePath(), err)
+	}
+	return st
+}
+
 // newDeps builds a Deps wired to the given fake git/tmux runners and a
 // fresh in-memory State.
 func newDeps(gitRunner, tmuxRunner *executil.FakeRunner) *Deps {
@@ -118,7 +148,7 @@ func TestCreate_BrandNewSessionNewRepo_CreatesWorktreeBranchAndWindow(t *testing
 		{Name: "tmux", Args: []string{"split-window", "-v", "-t", windowTarget + ".1", "-c", worktreePath}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".0", "nvim .", "C-m"}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".2", "claude", "C-m"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$1"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$1"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)
@@ -224,7 +254,7 @@ func TestCreate_ExistingSessionExistingRepo_IsNoop(t *testing.T) {
 	wantTmuxCalls := []executil.Call{
 		{Name: "tmux", Args: []string{"list-sessions", "-F", "#{session_id}:#{session_name}"}},
 		{Name: "tmux", Args: []string{"list-windows", "-t", "$3", "-F", "#{window_name}"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v (no split/send-keys — window already existed)", tmuxRunner.Calls, wantTmuxCalls)
@@ -337,7 +367,7 @@ func TestCreate_SessionNameWithDot_ResolvesViaSessionIDNotRawName(t *testing.T) 
 		{Name: "tmux", Args: []string{"split-window", "-v", "-t", windowTarget + ".1", "-c", worktreePath}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".0", "nvim .", "C-m"}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".2", "claude", "C-m"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$7"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$7"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v (every -t target must be the resolved session ID $7, never the dotted name %q)", tmuxRunner.Calls, wantTmuxCalls, name)
