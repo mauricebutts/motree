@@ -12,11 +12,24 @@ import (
 	"github.com/mauricebutts/motree/internal/ghutil"
 )
 
-// breakPATH points PATH at an empty temp dir, so exec.LookPath("gh") (and
-// anything else) fails to resolve for the duration of the test.
-func breakPATH(t *testing.T) {
+// forceGhAvailable overrides ghutil.LookPath so ghutil.Available() returns
+// true for the duration of the test, deterministically — independent of
+// whether gh actually happens to be installed on whatever machine runs
+// `go test`.
+func forceGhAvailable(t *testing.T) {
 	t.Helper()
-	t.Setenv("PATH", t.TempDir())
+	orig := ghutil.LookPath
+	ghutil.LookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	t.Cleanup(func() { ghutil.LookPath = orig })
+}
+
+// forceGhUnavailable overrides ghutil.LookPath so ghutil.Available()
+// returns false for the duration of the test, deterministically.
+func forceGhUnavailable(t *testing.T) {
+	t.Helper()
+	orig := ghutil.LookPath
+	ghutil.LookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+	t.Cleanup(func() { ghutil.LookPath = orig })
 }
 
 // captureStdout runs fn with os.Stdout redirected, returning whatever it
@@ -59,7 +72,7 @@ func TestPR_NonNumericArg_ReturnsError(t *testing.T) {
 }
 
 func TestPR_GhNotAvailable_ReturnsError(t *testing.T) {
-	breakPATH(t)
+	forceGhUnavailable(t)
 
 	gitRunner := &executil.FakeRunner{}
 	tmuxRunner := &executil.FakeRunner{}
@@ -78,6 +91,7 @@ func TestPR_GhNotAvailable_ReturnsError(t *testing.T) {
 }
 
 func TestPR_NotInsideGitRepo_ReturnsExactErrorText(t *testing.T) {
+	forceGhAvailable(t)
 	gitRunner := &executil.FakeRunner{
 		Queue: []executil.Response{
 			{Err: errors.New("not a git repo")},
@@ -105,6 +119,7 @@ func TestPR_NotInsideGitRepo_ReturnsExactErrorText(t *testing.T) {
 }
 
 func TestPR_HeadRefNotFound_PrintsNoPrFound_CreatesNothing(t *testing.T) {
+	forceGhAvailable(t)
 	repoRoot := t.TempDir()
 	prNumber := "42"
 
@@ -159,6 +174,7 @@ func TestPR_HeadRefNotFound_PrintsNoPrFound_CreatesNothing(t *testing.T) {
 }
 
 func TestPR_HappyPath_DetachedWorktreeThenGhCheckout(t *testing.T) {
+	forceGhAvailable(t)
 	setClaudeHome(t)
 	repoRoot := t.TempDir()
 	prNumber := "42"
@@ -241,6 +257,7 @@ func TestPR_HappyPath_DetachedWorktreeThenGhCheckout(t *testing.T) {
 }
 
 func TestPR_LaunchesFixedPromptAndAlwaysAttaches(t *testing.T) {
+	forceGhAvailable(t)
 	setClaudeHome(t)
 	repoRoot := t.TempDir()
 	prNumber := "7"
@@ -300,6 +317,7 @@ func TestPR_LaunchesFixedPromptAndAlwaysAttaches(t *testing.T) {
 }
 
 func TestPR_NewWorktree_PrunesBeforeAddingDetached(t *testing.T) {
+	forceGhAvailable(t)
 	setClaudeHome(t)
 	repoRoot := t.TempDir()
 	prNumber := "99"

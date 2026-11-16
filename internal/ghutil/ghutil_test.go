@@ -100,3 +100,30 @@ func TestCheckout_PropagatesError(t *testing.T) {
 		t.Fatalf("Checkout returned nil error, want the underlying gh error")
 	}
 }
+
+// withLookPath overrides the package-level LookPath var for the duration
+// of the test, restoring it afterward, so Available()'s result doesn't
+// depend on whether gh actually happens to be installed on the machine
+// running `go test`.
+func withLookPath(t *testing.T, fn func(file string) (string, error)) {
+	t.Helper()
+	orig := LookPath
+	LookPath = fn
+	t.Cleanup(func() { LookPath = orig })
+}
+
+func TestAvailable_TrueWhenLookPathSucceeds(t *testing.T) {
+	withLookPath(t, func(file string) (string, error) { return "/usr/bin/" + file, nil })
+
+	if !Available() {
+		t.Errorf("Available() = false, want true")
+	}
+}
+
+func TestAvailable_FalseWhenLookPathFails(t *testing.T) {
+	withLookPath(t, func(file string) (string, error) { return "", errors.New("not found") })
+
+	if Available() {
+		t.Errorf("Available() = true, want false")
+	}
+}
