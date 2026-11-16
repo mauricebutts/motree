@@ -2,6 +2,8 @@ package mtcmd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +11,19 @@ import (
 	"github.com/mauricebutts/motree/internal/executil"
 	"github.com/mauricebutts/motree/internal/state"
 )
+
+// existingWorktree creates (and returns) a real directory to stand in for a
+// session's worktree. RemoveSession guards `git worktree remove` behind an
+// os.Stat check — the same `[ -d "$worktree_path" ]` guard bash has — so a
+// fixture that wants the removal attempted must actually exist on disk.
+func existingWorktree(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll %q: %v", path, err)
+	}
+	return path
+}
 
 func TestRemoveSession_NoneTracked_ReturnsError(t *testing.T) {
 	gitRunner := &executil.FakeRunner{}
@@ -38,12 +53,14 @@ func TestRemoveSession_WorktreeRemoveFails_AbortsBeforeStateChange(t *testing.T)
 	}
 	tmuxRunner := &executil.FakeRunner{}
 	d := newDeps(gitRunner, tmuxRunner)
+	wt1 := existingWorktree(t, "one")
+	wt2 := existingWorktree(t, "two")
 	d.State.Sessions = []state.Session{
 		{
 			Name: "myfeature",
 			Repos: []state.Repo{
-				{RepoPath: "/repo/one", WorktreePath: "/repo/one/.claude/worktrees/myfeature"},
-				{RepoPath: "/repo/two", WorktreePath: "/repo/two/.claude/worktrees/myfeature"},
+				{RepoPath: "/repo/one", WorktreePath: wt1},
+				{RepoPath: "/repo/two", WorktreePath: wt2},
 			},
 		},
 	}
@@ -61,8 +78,8 @@ func TestRemoveSession_WorktreeRemoveFails_AbortsBeforeStateChange(t *testing.T)
 	}
 
 	wantGitCalls := []executil.Call{
-		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", "/repo/one/.claude/worktrees/myfeature"}},
-		{Name: "git", Args: []string{"-C", "/repo/two", "worktree", "remove", "/repo/two/.claude/worktrees/myfeature"}},
+		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", wt1}},
+		{Name: "git", Args: []string{"-C", "/repo/two", "worktree", "remove", wt2}},
 	}
 	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
 		t.Errorf("git Calls = %+v, want %+v (every repo's worktree removal must be attempted, but no branch delete)", gitRunner.Calls, wantGitCalls)
@@ -91,12 +108,14 @@ func TestRemoveSession_HappyPath_RemovesWorktreesBranchSessionAndState(t *testin
 		},
 	}
 	d := newDeps(gitRunner, tmuxRunner)
+	wt1 := existingWorktree(t, "one")
+	wt2 := existingWorktree(t, "two")
 	d.State.Sessions = []state.Session{
 		{
 			Name: "myfeature",
 			Repos: []state.Repo{
-				{RepoPath: "/repo/one", WorktreePath: "/repo/one/.claude/worktrees/myfeature"},
-				{RepoPath: "/repo/two", WorktreePath: "/repo/two/.claude/worktrees/myfeature"},
+				{RepoPath: "/repo/one", WorktreePath: wt1},
+				{RepoPath: "/repo/two", WorktreePath: wt2},
 			},
 		},
 	}
@@ -114,8 +133,8 @@ func TestRemoveSession_HappyPath_RemovesWorktreesBranchSessionAndState(t *testin
 	}
 
 	wantGitCalls := []executil.Call{
-		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", "/repo/one/.claude/worktrees/myfeature"}},
-		{Name: "git", Args: []string{"-C", "/repo/two", "worktree", "remove", "/repo/two/.claude/worktrees/myfeature"}},
+		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", wt1}},
+		{Name: "git", Args: []string{"-C", "/repo/two", "worktree", "remove", wt2}},
 		{Name: "git", Args: []string{"-C", "/repo/one", "branch", "-d", "myfeature"}},
 		{Name: "git", Args: []string{"-C", "/repo/two", "branch", "-d", "myfeature"}},
 	}
@@ -133,6 +152,106 @@ func TestRemoveSession_HappyPath_RemovesWorktreesBranchSessionAndState(t *testin
 
 	if len(d.State.Sessions) != 0 {
 		t.Errorf("State.Sessions = %+v, want none — session must be removed from state", d.State.Sessions)
+	}
+	if saved := readSavedState(t); len(saved.Sessions) != 0 {
+		t.Errorf("saved state = %+v, want none — RemoveSession must persist, not leave it to main.go", saved.Sessions)
+	}
+}
+
+// TestRemoveSession_PersistsStateBeforeKillingTmuxSession pins the ordering
+// hazard bash carries an explicit comment about: killing the tmux session
+// can SIGHUP the very `mt rm` process doing the killing (you picked your
+// own session out of the picker), so the state row must already be off disk
+// before kill-session runs. Otherwise the worktree and branch are gone but
+// the row survives forever — and, with its worktree directory now missing,
+// could never be removed on a retry.
+func TestRemoveSession_PersistsStateBeforeKillingTmuxSession(t *testing.T) {
+	gitRunner := &executil.FakeRunner{}
+
+	var savedAtKill *state.State
+	tmuxRunner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			if len(call.Args) == 0 {
+				return "", "", nil
+			}
+			switch call.Args[0] {
+			case "list-sessions":
+				return "$3:myfeature\n", "", nil
+			case "kill-session":
+				st, err := state.Load(state.StateFilePath())
+				if err == nil {
+					savedAtKill = st
+				}
+			}
+			return "", "", nil
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{Name: "myfeature", Repos: []state.Repo{{RepoPath: "/repo/one", WorktreePath: existingWorktree(t, "one")}}},
+		{Name: "other", Repos: []state.Repo{{RepoPath: "/repo/two", WorktreePath: existingWorktree(t, "two")}}},
+	}
+
+	var err error
+	captureStdout(t, func() { err = RemoveSession(d, "myfeature") })
+	if err != nil {
+		t.Fatalf("RemoveSession returned error: %v", err)
+	}
+
+	if savedAtKill == nil {
+		t.Fatalf("no state file on disk when kill-session ran — the Save must come first")
+	}
+	if len(savedAtKill.Sessions) != 1 || savedAtKill.Sessions[0].Name != "other" {
+		t.Errorf("state on disk at kill-session time = %+v, want only the untouched 'other' session", savedAtKill.Sessions)
+	}
+}
+
+// TestRemoveSession_WorktreeDirectoryAlreadyGone_SkipsGitAndStillRemoves
+// covers the `[ -d "$worktree_path" ]` guard: a worktree removed by hand
+// (or lost to an earlier partial failure) must not be handed to
+// `git worktree remove`, which would fail with "is not a working tree" and
+// wedge the whole removal, leaving the session unremovable.
+func TestRemoveSession_WorktreeDirectoryAlreadyGone_SkipsGitAndStillRemoves(t *testing.T) {
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, // list-sessions -> FindSessionID = ""
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	presentWorktree := existingWorktree(t, "present")
+	goneWorktree := filepath.Join(t.TempDir(), "gone")
+	d.State.Sessions = []state.Session{
+		{
+			Name: "myfeature",
+			Repos: []state.Repo{
+				{RepoPath: "/repo/gone", WorktreePath: goneWorktree},
+				{RepoPath: "/repo/present", WorktreePath: presentWorktree},
+			},
+		},
+	}
+
+	var err error
+	stdout := captureStdout(t, func() { err = RemoveSession(d, "myfeature") })
+	if err != nil {
+		t.Fatalf("RemoveSession returned error: %v, want nil — a missing worktree dir must count as already removed", err)
+	}
+	if stdout != "mt: removed session 'myfeature'\n" {
+		t.Errorf("stdout = %q, want the removal confirmation", stdout)
+	}
+
+	// Only the repo whose directory still exists gets a worktree remove;
+	// both still get the best-effort branch delete, as in bash.
+	wantGitCalls := []executil.Call{
+		{Name: "git", Args: []string{"-C", "/repo/present", "worktree", "remove", presentWorktree}},
+		{Name: "git", Args: []string{"-C", "/repo/gone", "branch", "-d", "myfeature"}},
+		{Name: "git", Args: []string{"-C", "/repo/present", "branch", "-d", "myfeature"}},
+	}
+	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
+		t.Errorf("git Calls = %+v, want %+v", gitRunner.Calls, wantGitCalls)
+	}
+	if len(d.State.Sessions) != 0 {
+		t.Errorf("State.Sessions = %+v, want none", d.State.Sessions)
 	}
 }
 
@@ -153,7 +272,7 @@ func TestRemoveSession_TmuxSessionAlreadyGone_StillRemovesRest(t *testing.T) {
 		{
 			Name: "myfeature",
 			Repos: []state.Repo{
-				{RepoPath: "/repo/one", WorktreePath: "/repo/one/.claude/worktrees/myfeature"},
+				{RepoPath: "/repo/one", WorktreePath: existingWorktree(t, "one")},
 			},
 		},
 	}
@@ -198,7 +317,7 @@ func TestRemoveSession_BranchDeleteFailure_IsIgnored(t *testing.T) {
 		{
 			Name: "myfeature",
 			Repos: []state.Repo{
-				{RepoPath: "/repo/one", WorktreePath: "/repo/one/.claude/worktrees/myfeature"},
+				{RepoPath: "/repo/one", WorktreePath: existingWorktree(t, "one")},
 			},
 		},
 	}
@@ -322,11 +441,12 @@ func TestRm_HappyPath_PicksAndRemovesSelectedSession(t *testing.T) {
 		},
 	}
 	d := newDeps(gitRunner, tmuxRunner)
+	worktreePath := existingWorktree(t, "one")
 	d.State.Sessions = []state.Session{
 		{
 			Name: "myfeature",
 			Repos: []state.Repo{
-				{RepoPath: "/repo/one", WorktreePath: "/repo/one/.claude/worktrees/myfeature"},
+				{RepoPath: "/repo/one", WorktreePath: worktreePath},
 			},
 		},
 	}
@@ -344,7 +464,7 @@ func TestRm_HappyPath_PicksAndRemovesSelectedSession(t *testing.T) {
 	}
 
 	wantGitCalls := []executil.Call{
-		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", "/repo/one/.claude/worktrees/myfeature"}},
+		{Name: "git", Args: []string{"-C", "/repo/one", "worktree", "remove", worktreePath}},
 		{Name: "git", Args: []string{"-C", "/repo/one", "branch", "-d", "myfeature"}},
 	}
 	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {

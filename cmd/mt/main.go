@@ -91,12 +91,14 @@ func main() {
 	}
 }
 
-// reportAndExit prints err (unless it's errUsageShown, meaning the callee
-// already printed its own usage message to stderr) and exits 1. Shared by
-// the create/spawn/pr dispatch branches above, the only ones that can
-// produce errUsageShown.
+// reportAndExit prints err and exits 1, skipping the print for the two
+// sentinels that mean "the callee already printed this itself":
+// errUsageShown (it wrote usage() to stderr) and mtcmd.ErrNoPRFound
+// (`mt pr` echoed the bash-compatible "no pr found" line to stdout).
+// Shared by the create/spawn/pr dispatch branches above, the only ones
+// that produce them.
 func reportAndExit(err error) {
-	if err != errUsageShown {
+	if err != errUsageShown && !errors.Is(err, mtcmd.ErrNoPRFound) {
 		fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 	}
 	os.Exit(1)
@@ -183,9 +185,17 @@ func runPreview(name string) error {
 }
 
 // runLs runs the `mt ls` fzf session picker, attaching to (or recreating)
-// whichever session gets picked, then persists whatever state Ls touched
-// (AttachOrRecreate's own LastOpened bump, and any repo rows it pruned for
-// worktrees that had gone missing).
+// whichever session gets picked.
+//
+// There is deliberately no Save here. AttachOrRecreate persists its own
+// LastOpened bump and repo pruning before it hands the terminal to tmux —
+// it has to, since attaching blocks for the whole life of that tmux
+// session and can tear this process down. Saving again afterwards would be
+// worse than redundant: this process's in-memory State is a snapshot from
+// before the attach, so writing it back on detach would clobber anything
+// other `mt` invocations recorded in the meantime. The paths that return
+// without attaching (no sessions tracked, fzf missing, picker cancelled)
+// mutate no state, so they have nothing to persist.
 func runLs() error {
 	d, err := newDeps()
 	if err != nil {
@@ -204,15 +214,14 @@ func runLs() error {
 
 	insideTmux := os.Getenv("TMUX") != ""
 
-	if err := mtcmd.Ls(d, mtBinaryPath, cwd, insideTmux); err != nil {
-		return err
-	}
-	return d.State.Save(state.StateFilePath())
+	return mtcmd.Ls(d, mtBinaryPath, cwd, insideTmux)
 }
 
 // runRm runs the `mt rm` fzf session picker, removing whichever session
-// gets picked (its worktrees, branches, tmux session, and state), then
-// persists the resulting state.
+// gets picked (its worktrees, branches, state, and tmux session).
+//
+// As with runLs, no Save here: RemoveSession writes the pruned state out
+// itself, before the kill-session that can SIGHUP this very process.
 func runRm() error {
 	d, err := newDeps()
 	if err != nil {
@@ -224,10 +233,7 @@ func runRm() error {
 		return err
 	}
 
-	if err := mtcmd.Rm(d, cwd); err != nil {
-		return err
-	}
-	return d.State.Save(state.StateFilePath())
+	return mtcmd.Rm(d, cwd)
 }
 
 // runCreate implements the bare `mt <name> [-b <base-branch>] [-d
@@ -262,10 +268,12 @@ func runCreate(args []string) error {
 	insideTmux := os.Getenv("TMUX") != ""
 	now := time.Now().Unix()
 
-	if err := mtcmd.Create(d, name, *baseBranch, *description, cwd, insideTmux, now); err != nil {
-		return err
-	}
-	return d.State.Save(state.StateFilePath())
+	// Create persists state itself, right before it attaches (see
+	// mtcmd.saveAndAttach) — so there's no Save here. Attaching blocks for
+	// the life of the tmux session, so a Save after it returned would both
+	// come far too late and risk overwriting what other `mt` invocations
+	// wrote while the user was attached.
+	return mtcmd.Create(d, name, *baseBranch, *description, cwd, insideTmux, now)
 }
 
 // runSpawn implements `mt spawn <name> "<prompt>" [-b <base-branch>] [-d
@@ -349,10 +357,8 @@ func runPR(args []string) error {
 	now := time.Now().Unix()
 	gh := ghutil.GH{Runner: executil.RealRunner{}}
 
-	if err := mtcmd.PR(d, gh, prNumber, cwd, insideTmux, now); err != nil {
-		return err
-	}
-	return d.State.Save(state.StateFilePath())
+	// Same as runCreate: PR saves before it attaches, so nothing to do here.
+	return mtcmd.PR(d, gh, prNumber, cwd, insideTmux, now)
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/mauricebutts/motree/internal/fzfutil"
+	"github.com/mauricebutts/motree/internal/state"
 )
 
 // rmFzfArgs builds `mt rm`'s fzf argv, ported directly from the original
@@ -69,13 +70,18 @@ func Rm(d *Deps, cwd string) error {
 }
 
 // RemoveSession removes session name entirely: every repo's worktree, then
-// (best-effort) its branch, then its tmux session if one is running, then
-// its state row. Ported from the original bash motree.sh's mt_remove.
+// (best-effort) its branch, then its state row (persisted immediately),
+// and only then its tmux session if one is running. Ported from the
+// original bash motree.sh's mt_remove, step order included.
 //
 // Worktree removal runs as a first pass over every repo before anything
 // else is touched: if ANY repo's worktree fails to remove, the real git
 // error text for each failure is printed and RemoveSession aborts, leaving
-// state, tmux, and branches untouched — no partial removal.
+// state, tmux, and branches untouched — no partial removal. A repo whose
+// worktree directory is already gone (removed by hand, or by an earlier
+// partial failure) is skipped rather than handed to `git worktree remove`,
+// which would only fail with "is not a working tree" and wedge the whole
+// removal — the same `[ -d "$worktree_path" ]` guard bash has.
 func RemoveSession(d *Deps, name string) error {
 	repos := d.State.ReposFor(name)
 	if len(repos) == 0 {
@@ -84,6 +90,9 @@ func RemoveSession(d *Deps, name string) error {
 
 	failed := false
 	for _, repo := range repos {
+		if _, statErr := os.Stat(repo.WorktreePath); statErr != nil {
+			continue
+		}
 		if err := d.Git.WorktreeRemove(repo.RepoPath, repo.WorktreePath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			failed = true
@@ -97,6 +106,21 @@ func RemoveSession(d *Deps, name string) error {
 		_ = d.Git.BranchDelete(repo.RepoPath, name) // best-effort, matches bash's "|| true"
 	}
 
+	// State is dropped AND flushed to disk here, before the kill-session
+	// below — not left to cmd/mt/main.go's trailing Save, which would be
+	// too late. Killing the tmux session that contains the pane running
+	// this very `mt rm` (picking your own session out of the picker) tears
+	// that pane down and can SIGHUP us mid-execution; anything not already
+	// on disk at that point is lost, which would leave the worktree and
+	// branch deleted but the state row alive forever — and, with the
+	// worktree directory now missing, unremovable on a retry. Bash carries
+	// a comment on this exact hazard above its own kill-session.
+	d.State.RemoveSession(name)
+	if err := d.State.Save(state.StateFilePath()); err != nil {
+		return err
+	}
+	fmt.Printf("mt: removed session '%s'\n", name)
+
 	sessionID, err := d.Tmux.FindSessionID(name)
 	if err != nil {
 		return err
@@ -107,7 +131,5 @@ func RemoveSession(d *Deps, name string) error {
 		}
 	}
 
-	d.State.RemoveSession(name)
-	fmt.Printf("mt: removed session '%s'\n", name)
 	return nil
 }

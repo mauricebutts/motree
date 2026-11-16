@@ -70,7 +70,7 @@ func Create(d *Deps, name, baseBranchFlag, description, cwd string, insideTmux b
 		}
 	}
 
-	return d.Tmux.AttachOrSwitch(sessionID, insideTmux)
+	return saveAndAttach(d, sessionID, insideTmux)
 }
 
 // ensureSessionWindow finds or creates the tmux session sessionName, finds
