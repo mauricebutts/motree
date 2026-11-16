@@ -103,7 +103,7 @@ func TestFormatLabel_MatchesEmojiDateReposDescriptionFormat(t *testing.T) {
 	got := FormatLabel(sess, statusfile.Waiting, true)
 
 	wantDate := timeFormatForTest(1234567890)
-	want := "🔔myfeature | " + wantDate + " (foo,bar) — fix the thing"
+	want := "🔔 myfeature | " + wantDate + " (foo,bar) — fix the thing"
 	if got != want {
 		t.Errorf("FormatLabel = %q, want %q", got, want)
 	}
@@ -155,7 +155,7 @@ func TestFormatLabel_StoppedEmoji(t *testing.T) {
 
 	got := FormatLabel(sess, statusfile.Stopped, true)
 
-	want := "🛑myfeature — (no description)"
+	want := "🛑 myfeature — (no description)"
 	if got != want {
 		t.Errorf("FormatLabel = %q, want %q", got, want)
 	}
@@ -166,7 +166,7 @@ func TestFormatLabel_SubagentsEmoji(t *testing.T) {
 
 	got := FormatLabel(sess, statusfile.Subagents, true)
 
-	want := "🤖myfeature — (no description)"
+	want := "🤖 myfeature — (no description)"
 	if got != want {
 		t.Errorf("FormatLabel = %q, want %q", got, want)
 	}

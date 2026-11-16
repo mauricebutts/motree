@@ -28,10 +28,10 @@ var statusEmoji = map[statusfile.Status]string{
 }
 
 // formatTimeForLabel formats a LastOpened Unix timestamp exactly as the
-// original bash mt_label_for's "date -r "$ts" '+%Y-%m-%d %H:%M'" did, in
+// original bash mt_label_for's "date -r "$ts" '+%a %Y-%m-%d %H:%M'" did, in
 // local time.
 func formatTimeForLabel(lastOpened int64) string {
-	return time.Unix(lastOpened, 0).Format("2006-01-02 15:04")
+	return time.Unix(lastOpened, 0).Format("Mon 2006-01-02 15:04")
 }
 
 // noDescriptionPlaceholder is shown in place of a session's description,
@@ -80,15 +80,15 @@ func SessionStatus(repos []state.Repo) (status statusfile.Status, found bool) {
 }
 
 // FormatLabel renders the exact row label the original bash mt_label_for
-// produces: "<emoji><name> | <date> (<repos>) — <description>", where the
-// emoji, date, and repo-list segments are each present only under the
-// conditions documented on their assembly below, and the description
-// segment is always present (showing noDescriptionPlaceholder when sess
-// has none).
+// produces: "<emoji> <name> | <Mon date> (<repos>) — <description>" (no
+// trailing space after the name when there's no emoji), where the emoji,
+// date, and repo-list segments are each present only under the conditions
+// documented on their assembly below, and the description segment is
+// always present (showing noDescriptionPlaceholder when sess has none).
 func FormatLabel(sess state.Session, status statusfile.Status, found bool) string {
 	label := sess.Name
 	if found {
-		label = statusEmoji[status] + label
+		label = statusEmoji[status] + " " + label
 	}
 
 	if sess.LastOpened != 0 {
