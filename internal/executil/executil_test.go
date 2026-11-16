@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+func TestRealRunner_SatisfiesRunnerInterface(t *testing.T) {
+	// Verify that RealRunner{} (bare value) satisfies the Runner interface,
+	// as expected by the task brief
+	var _ Runner = RealRunner{}
+}
+
 func TestRealRunner_Run_CapturesOutputAndExitError(t *testing.T) {
 	r := RealRunner{}
 	stdout, stderr, err := r.Run("sh", "-c", "echo out; echo err >&2; exit 3")

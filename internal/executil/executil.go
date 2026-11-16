@@ -16,7 +16,7 @@ type RealRunner struct{}
 
 // Run executes a command and returns stdout, stderr, and error.
 // On non-zero exit, the error message includes the captured stderr.
-func (r *RealRunner) Run(name string, args ...string) (stdout, stderr string, err error) {
+func (r RealRunner) Run(name string, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.Command(name, args...)
 
 	var outBuf, errBuf bytes.Buffer

@@ -6,17 +6,20 @@ type Call struct {
 	Args []string
 }
 
+// Response represents a canned response for a queued command execution.
+type Response struct {
+	Stdout string
+	Stderr string
+	Err    error
+}
+
 // FakeRunner is a test double that records calls and returns canned responses.
 type FakeRunner struct {
 	Calls []Call
 	// Responses can be set to a function that returns results for each call
 	Responses func(call Call) (stdout, stderr string, err error)
 	// Queue for sequential responses (used if Responses is nil)
-	Queue []struct {
-		Stdout string
-		Stderr string
-		Err    error
-	}
+	Queue      []Response
 	queueIndex int
 }
 
