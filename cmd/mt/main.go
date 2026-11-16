@@ -51,6 +51,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 			os.Exit(1)
 		}
+	case "rm":
+		if err := runRm(); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -114,6 +119,22 @@ func runLs() error {
 	insideTmux := os.Getenv("TMUX") != ""
 
 	return mtcmd.Ls(d, mtBinaryPath, cwd, insideTmux)
+}
+
+// runRm runs the `mt rm` fzf session picker, removing whichever session
+// gets picked (its worktrees, branches, tmux session, and state).
+func runRm() error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	return mtcmd.Rm(d, cwd)
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by
