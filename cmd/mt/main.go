@@ -46,6 +46,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 			os.Exit(1)
 		}
+	case "ls":
+		if err := runLs(); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -86,6 +91,29 @@ func runPreview(name string) error {
 	}
 	fmt.Println(mtcmd.Preview(d, name))
 	return nil
+}
+
+// runLs runs the `mt ls` fzf session picker, attaching to (or recreating)
+// whichever session gets picked.
+func runLs() error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	mtBinaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve mt binary path: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	insideTmux := os.Getenv("TMUX") != ""
+
+	return mtcmd.Ls(d, mtBinaryPath, cwd, insideTmux)
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by

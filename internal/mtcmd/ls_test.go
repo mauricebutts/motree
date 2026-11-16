@@ -1,6 +1,9 @@
 package mtcmd
 
 import (
+	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -16,6 +19,38 @@ import (
 func setStatusHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("MOTREE_STATE_FILE", filepath.Join(t.TempDir(), ".motree"))
+}
+
+// forceFzfUnavailable overrides fzfLookPath so Ls's "fzf isn't installed"
+// fallback branch fires deterministically, independent of whether fzf
+// actually happens to be installed on whatever machine runs `go test`.
+func forceFzfUnavailable(t *testing.T) {
+	t.Helper()
+	orig := fzfLookPath
+	fzfLookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+	t.Cleanup(func() { fzfLookPath = orig })
+}
+
+// captureStderr runs fn with os.Stderr redirected, returning whatever it
+// wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	return string(out)
 }
 
 func TestSessionStatus_PriorityWaitingOverRunningOverSubagentsOverStopped(t *testing.T) {
@@ -303,4 +338,192 @@ func TestPreview_ClaudePaneFound_ReturnsDescriptionDividerAndPaneTail(t *testing
 // doesn't hardcode a timezone-dependent string.
 func timeFormatForTest(ts int64) string {
 	return formatTimeForLabel(ts)
+}
+
+func TestLs_NoSessionsTracked_PrintsMessageNoFzfCall(t *testing.T) {
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	var err error
+	stderr := captureStderr(t, func() {
+		err = Ls(d, "/usr/local/bin/mt", "/tmp", false)
+	})
+
+	if err != nil {
+		t.Fatalf("Ls returned error: %v", err)
+	}
+	if stderr != "mt: no sessions tracked yet\n" {
+		t.Errorf("stderr = %q, want %q", stderr, "mt: no sessions tracked yet\n")
+	}
+	if len(tmuxRunner.Calls) != 0 {
+		t.Errorf("tmux Calls = %+v, want none — must return before ever touching fzf/tmux", tmuxRunner.Calls)
+	}
+}
+
+func TestLs_NoFzfInstalled_FallsBackToPlainListing(t *testing.T) {
+	setStatusHome(t)
+	forceFzfUnavailable(t)
+
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{
+			Name:        "myfeature",
+			Description: "fix the thing",
+			Repos:       []state.Repo{{RepoPath: "/Users/x/Projects/foo", WorktreePath: t.TempDir()}},
+		},
+	}
+
+	var err error
+	stdout := captureStdout(t, func() {
+		err = Ls(d, "/usr/local/bin/mt", "/tmp", false)
+	})
+
+	if err != nil {
+		t.Fatalf("Ls returned error: %v", err)
+	}
+
+	wantLabel := FormatLabel(d.State.Sessions[0], "", false)
+	wantOut := wantLabel + "\n  /Users/x/Projects/foo\n"
+	if stdout != wantOut {
+		t.Errorf("stdout = %q, want %q", stdout, wantOut)
+	}
+	if len(tmuxRunner.Calls) != 0 {
+		t.Errorf("tmux Calls = %+v, want none — plain fallback never touches tmux", tmuxRunner.Calls)
+	}
+}
+
+func TestAttachOrRecreate_LiveSession_JustAttaches(t *testing.T) {
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "$3:myfeature\n"}, // list-sessions -> session is live
+			{},                         // attach-session
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	if err := AttachOrRecreate(d, "myfeature", false); err != nil {
+		t.Fatalf("AttachOrRecreate returned error: %v", err)
+	}
+
+	wantTmuxCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"list-sessions", "-F", "#{session_id}:#{session_name}"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$3"}},
+	}
+	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
+		t.Errorf("tmux Calls = %+v, want %+v (live session must just attach, no rebuild)", tmuxRunner.Calls, wantTmuxCalls)
+	}
+}
+
+func TestAttachOrRecreate_DeadSession_RebuildsWindowsPruningMissingWorktrees(t *testing.T) {
+	setClaudeHome(t)
+
+	missingWorktree := filepath.Join(t.TempDir(), "gone")
+	survivingWorktree := t.TempDir()
+	survivingRepoPath := "/Users/x/Projects/bar"
+	missingRepoPath := "/Users/x/Projects/gone-repo"
+
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, // list-sessions (top-level FindSessionID) -> ""
+			{Err: errors.New("no server running")}, // list-sessions (inside ensureSessionWindow) -> ""
+			{Stdout: "$5\n"},                       // new-session -> sessionID
+			{},                                     // split-window -h
+			{},                                     // split-window -v
+			{},                                     // send-keys nvim
+			{},                                     // send-keys claude resume
+			{},                                     // attach-session
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{
+			Name: "myfeature",
+			Repos: []state.Repo{
+				{RepoPath: missingRepoPath, WorktreePath: missingWorktree},
+				{RepoPath: survivingRepoPath, WorktreePath: survivingWorktree},
+			},
+		},
+	}
+
+	var err error
+	stderr := captureStderr(t, func() {
+		err = AttachOrRecreate(d, "myfeature", false)
+	})
+	if err != nil {
+		t.Fatalf("AttachOrRecreate returned error: %v", err)
+	}
+
+	wantWarning := "mt: skipping '" + missingRepoPath + "' — worktree is gone, pruning it from tracking\n"
+	if stderr != wantWarning {
+		t.Errorf("stderr = %q, want %q", stderr, wantWarning)
+	}
+
+	remaining := d.State.ReposFor("myfeature")
+	if len(remaining) != 1 || remaining[0].RepoPath != survivingRepoPath {
+		t.Errorf("ReposFor(myfeature) = %+v, want only the surviving repo %q", remaining, survivingRepoPath)
+	}
+
+	windowTarget := "$5:bar"
+	wantTmuxCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"list-sessions", "-F", "#{session_id}:#{session_name}"}},
+		{Name: "tmux", Args: []string{"list-sessions", "-F", "#{session_id}:#{session_name}"}},
+		{Name: "tmux", Args: []string{"new-session", "-d", "-s", "myfeature", "-n", "bar", "-c", survivingWorktree, "-P", "-F", "#{session_id}"}},
+		{Name: "tmux", Args: []string{"split-window", "-h", "-p", "25", "-t", windowTarget, "-c", survivingWorktree}},
+		{Name: "tmux", Args: []string{"split-window", "-v", "-t", windowTarget + ".1", "-c", survivingWorktree}},
+		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".0", "nvim .", "C-m"}},
+		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".2", "claude", "C-m"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$5"}},
+	}
+	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
+		t.Errorf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)
+	}
+}
+
+func TestAttachOrRecreate_NoRepoWorktreesLeft_ReturnsError(t *testing.T) {
+	missingWorktree := filepath.Join(t.TempDir(), "gone")
+
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, // list-sessions -> ""
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{
+			Name:  "myfeature",
+			Repos: []state.Repo{{RepoPath: "/Users/x/Projects/gone-repo", WorktreePath: missingWorktree}},
+		},
+	}
+
+	err := captureStderrAndReturnErr(t, func() error { return AttachOrRecreate(d, "myfeature", false) })
+	if err == nil {
+		t.Fatalf("AttachOrRecreate returned nil error, want an error — no worktree survived")
+	}
+	wantErr := "mt: nothing left to recreate for session 'myfeature'"
+	if err.Error() != wantErr {
+		t.Errorf("AttachOrRecreate error = %q, want %q", err.Error(), wantErr)
+	}
+
+	if len(tmuxRunner.Calls) != 1 {
+		t.Errorf("tmux Calls = %+v, want exactly 1 (the initial FindSessionID check, no rebuild attempt)", tmuxRunner.Calls)
+	}
+	if len(d.State.ReposFor("myfeature")) != 0 {
+		t.Errorf("ReposFor(myfeature) = %+v, want none — the only repo's worktree was gone", d.State.ReposFor("myfeature"))
+	}
+}
+
+// captureStderrAndReturnErr runs fn with stderr redirected (and discarded)
+// so its pruning-warning side effect doesn't pollute test output, and
+// returns fn's error.
+func captureStderrAndReturnErr(t *testing.T, fn func() error) error {
+	t.Helper()
+	var err error
+	captureStderr(t, func() { err = fn() })
+	return err
 }

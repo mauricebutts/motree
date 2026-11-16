@@ -1,13 +1,27 @@
 package mtcmd
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/mauricebutts/motree/internal/claudecmd"
+	"github.com/mauricebutts/motree/internal/fzfutil"
 	"github.com/mauricebutts/motree/internal/state"
 	"github.com/mauricebutts/motree/internal/statusfile"
 )
+
+// fzfLookPath resolves name to an executable's path, exactly like
+// exec.LookPath (its default value). It's a package-level var rather than
+// a direct exec.LookPath call so Ls's "fzf isn't installed" fallback is
+// deterministically testable, the same trick ghutil.LookPath uses for
+// "gh" — reassign the original value back (e.g. via t.Cleanup) after
+// overriding it.
+var fzfLookPath = exec.LookPath
 
 // previewDivider separates a session's description from its claude pane
 // snapshot in Preview's output, matching the original bash motree.sh's
@@ -177,4 +191,125 @@ func Preview(d *Deps, name string) string {
 	}
 
 	return desc + "\n" + previewDivider + "\n" + paneText
+}
+
+// Ls is the full `mt ls` entrypoint: an fzf picker over tracked sessions,
+// optionally live-reloading its rows and preview, that attaches to (or
+// recreates) whichever session gets picked. Ported from the original bash
+// motree.sh's do_ls.
+//
+// cwd is accepted for interface symmetry with Create/PR/Spawn's
+// entrypoints; do_ls's own behavior never depended on the invoking
+// directory, so Ls doesn't use it.
+func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
+	if len(d.State.SortedSessions()) == 0 {
+		fmt.Fprintln(os.Stderr, "mt: no sessions tracked yet")
+		return nil
+	}
+
+	if _, err := fzfLookPath("fzf"); err != nil {
+		for _, sess := range d.State.SortedSessions() {
+			status, found := SessionStatus(sess.Repos)
+			fmt.Println(FormatLabel(sess, status, found))
+			for _, repo := range sess.Repos {
+				fmt.Println("  " + repo.RepoPath)
+			}
+		}
+		return nil
+	}
+
+	rows := RenderRows(d.State)
+	runner := d.Tmux.Runner
+
+	listen := fzfutil.SupportsListen(runner)
+
+	var socketPath string
+	if listen {
+		sp, err := newFzfSocketPath()
+		if err != nil {
+			return err
+		}
+		socketPath = sp
+		defer os.Remove(socketPath)
+	}
+
+	args := fzfutil.BuildArgs(mtBinaryPath, listen, socketPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if listen {
+		fzfutil.StartReloadPoller(ctx, runner, mtBinaryPath, socketPath)
+	}
+	defer cancel()
+
+	selectedName, runErr := fzfutil.Run(runner, rows, args)
+	if runErr != nil {
+		return runErr
+	}
+	if selectedName == "" {
+		return nil
+	}
+
+	return AttachOrRecreate(d, selectedName, insideTmux)
+}
+
+// newFzfSocketPath generates a unique, not-yet-existing path for fzf's
+// --listen unix socket, matching the original bash do_ls's
+// `mktemp -u "${TMPDIR:-/tmp}/mt-fzf-XXXXXX").sock` — a name, not a file:
+// fzf creates/binds the socket itself, so the path must not already exist
+// when it starts.
+func newFzfSocketPath() (string, error) {
+	f, err := os.CreateTemp("", "mt-fzf-*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(name); err != nil {
+		return "", err
+	}
+	return name + ".sock", nil
+}
+
+// AttachOrRecreate attaches to session name if its tmux session is still
+// live, or rebuilds it (the worktree directories already exist — this
+// just recreates the tmux session/windows/panes) otherwise, pruning any
+// repo whose worktree directory is gone from tracking as it goes. Ported
+// from the original bash motree.sh's mt_attach_or_recreate.
+func AttachOrRecreate(d *Deps, name string, insideTmux bool) error {
+	sessionID, err := d.Tmux.FindSessionID(name)
+	if err != nil {
+		return err
+	}
+	if sessionID != "" {
+		return d.Tmux.AttachOrSwitch(sessionID, insideTmux)
+	}
+
+	var rebuiltSessionID string
+	for _, repo := range d.State.ReposFor(name) {
+		if _, statErr := os.Stat(repo.WorktreePath); statErr != nil {
+			fmt.Fprintf(os.Stderr, "mt: skipping '%s' — worktree is gone, pruning it from tracking\n", repo.RepoPath)
+			d.State.RemoveRepo(name, repo.RepoPath)
+			continue
+		}
+
+		sid, windowTarget, isNewWindow, ensErr := ensureSessionWindow(d, name, filepath.Base(repo.RepoPath), repo.WorktreePath, nil)
+		if ensErr != nil {
+			return ensErr
+		}
+		rebuiltSessionID = sid
+
+		if isNewWindow {
+			if err := d.Tmux.SendKeys(windowTarget+".2", claudecmd.ResumeCommand(repo.WorktreePath)); err != nil {
+				return err
+			}
+		}
+	}
+
+	if rebuiltSessionID == "" {
+		return fmt.Errorf("mt: nothing left to recreate for session '%s'", name)
+	}
+
+	return d.Tmux.AttachOrSwitch(rebuiltSessionID, insideTmux)
 }
