@@ -11,7 +11,9 @@ import (
 // It reads a JSON object with fields hook_event_name and cwd,
 // looks up the event status, and updates the status file accordingly.
 // Unknown events and malformed JSON are silently ignored (no-op).
-// Always returns nil to prevent hook failures from surfacing to Claude Code.
+// I/O errors from statusfile.Write/Clear are propagated to the caller
+// (e.g., disk full, permission denied), which main.go logs to stderr.
+// main.go always exits 0 regardless of Run's return value.
 func Run(stdin io.Reader) error {
 	// Parse JSON payload from stdin
 	var payload struct {
@@ -32,14 +34,11 @@ func Run(stdin io.Reader) error {
 		return nil
 	}
 
-	// Handle the status update
+	// Handle the status update, propagating I/O errors
 	if clear {
 		// SessionEnd event: clear the status file
-		_ = statusfile.Clear(payload.Cwd)
-	} else {
-		// Known event: write the status
-		_ = statusfile.Write(payload.Cwd, status)
+		return statusfile.Clear(payload.Cwd)
 	}
-
-	return nil
+	// Known event: write the status
+	return statusfile.Write(payload.Cwd, status)
 }

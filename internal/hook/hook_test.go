@@ -9,10 +9,32 @@ import (
 	"github.com/mauricebutts/motree/internal/statusfile"
 )
 
-func TestRun_WritesStatusForKnownEvent(t *testing.T) {
-	cwd := t.TempDir()
-	defer cleanupStatus(cwd)
+// setupTempStateFile sets up a temporary state file directory and env var.
+// Returns a cleanup function that restores the original env var.
+func setupTempStateFile(t *testing.T) func() {
+	// Save original env var
+	oldEnv, exists := os.LookupEnv("MOTREE_STATE_FILE")
 
+	// Use a temporary directory for the state file
+	tmpDir := t.TempDir()
+	stateFilePath := filepath.Join(tmpDir, ".motree")
+	os.Setenv("MOTREE_STATE_FILE", stateFilePath)
+
+	// Return cleanup function
+	return func() {
+		if exists {
+			os.Setenv("MOTREE_STATE_FILE", oldEnv)
+		} else {
+			os.Unsetenv("MOTREE_STATE_FILE")
+		}
+	}
+}
+
+func TestRun_WritesStatusForKnownEvent(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
 	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `"}`
 	r := bytes.NewReader([]byte(input))
 
@@ -35,8 +57,10 @@ func TestRun_WritesStatusForKnownEvent(t *testing.T) {
 }
 
 func TestRun_ClearsStatusOnSessionEnd(t *testing.T) {
-	cwd := t.TempDir()
-	defer cleanupStatus(cwd)
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
 
 	// Write initial status
 	if err := statusfile.Write(cwd, statusfile.Running); err != nil {
@@ -69,9 +93,10 @@ func TestRun_ClearsStatusOnSessionEnd(t *testing.T) {
 }
 
 func TestRun_UnknownEvent_NoopNoError(t *testing.T) {
-	cwd := t.TempDir()
-	defer cleanupStatus(cwd)
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
 
+	cwd := "/home/user/project"
 	input := `{"hook_event_name": "UnknownEvent", "cwd": "` + cwd + `"}`
 	r := bytes.NewReader([]byte(input))
 
@@ -91,8 +116,8 @@ func TestRun_UnknownEvent_NoopNoError(t *testing.T) {
 }
 
 func TestRun_MalformedJSON_NoopNoError(t *testing.T) {
-	cwd := t.TempDir()
-	defer cleanupStatus(cwd)
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
 
 	input := `{this is not valid json`
 	r := bytes.NewReader([]byte(input))
@@ -102,7 +127,8 @@ func TestRun_MalformedJSON_NoopNoError(t *testing.T) {
 		t.Fatalf("Run returned error for malformed JSON: %v", err)
 	}
 
-	// Verify no status file was created
+	// Verify no status file was created (no error, but also no write attempted)
+	cwd := "/some/test/path"
 	_, found, err := statusfile.Read(cwd)
 	if err != nil {
 		t.Fatalf("Read status failed: %v", err)
@@ -113,9 +139,10 @@ func TestRun_MalformedJSON_NoopNoError(t *testing.T) {
 }
 
 func TestRun_UntrackedCwd_StillWrites(t *testing.T) {
-	cwd := "/tmp/nonexistent/deeply/nested/path"
-	defer cleanupStatus(cwd)
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
 
+	cwd := "/tmp/nonexistent/deeply/nested/path"
 	input := `{"hook_event_name": "UserPromptSubmit", "cwd": "` + cwd + `"}`
 	r := bytes.NewReader([]byte(input))
 
@@ -137,9 +164,36 @@ func TestRun_UntrackedCwd_StillWrites(t *testing.T) {
 	}
 }
 
-// cleanupStatus removes status files created during tests
-func cleanupStatus(cwd string) {
+func TestRun_PropagatesStatusfileWriteError(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	// Make the status directory read-only to cause Write to fail
 	statusDir := statusfile.Dir()
-	statusPath := filepath.Join(statusDir, statusfile.EscapeCwd(cwd))
-	_ = os.Remove(statusPath)
+	if err := os.MkdirAll(statusDir, 0755); err != nil {
+		t.Fatalf("failed to create status dir: %v", err)
+	}
+
+	// Save original permissions
+	fileInfo, err := os.Stat(statusDir)
+	if err != nil {
+		t.Fatalf("failed to stat status dir: %v", err)
+	}
+	originalMode := fileInfo.Mode()
+
+	// Make read-only to prevent writes
+	if err := os.Chmod(statusDir, 0555); err != nil {
+		t.Fatalf("failed to chmod status dir: %v", err)
+	}
+	defer os.Chmod(statusDir, originalMode)
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `"}`
+	r := bytes.NewReader([]byte(input))
+
+	// Run should return an error since it can't write to read-only dir
+	err = Run(r)
+	if err == nil {
+		t.Fatal("Run should return error when statusfile.Write fails")
+	}
 }
