@@ -87,9 +87,12 @@ func BuildArgs(mtBinaryPath string, listen bool, socketPath string) []string {
 // (tmux.Quote) so it survives unexpanded regardless of spaces or shell
 // metacharacters.
 //
-// If fzf exits with its "no selection" status (exit code 1, which
-// cancel/Esc produces), Run returns ("", nil) rather than an error —
-// matching the original bash do_ls's `... fzf ...)" || return 0`.
+// If fzf exits non-zero for any reason — its "no selection" status (exit
+// code 1, from Esc/cancel), a signal like SIGINT from Ctrl-C (exit code
+// 130), or anything else — Run returns ("", nil) rather than an error.
+// This matches the original bash do_ls's `... fzf ...)" || return 0`,
+// which treats every nonzero fzf exit identically: there is no bash-side
+// distinction by exit code, so the Go port doesn't make one either.
 func Run(runner executil.Runner, rows []string, args []string) (selectedName string, err error) {
 	tmpFile, err := os.CreateTemp("", "mt-fzf-rows-*")
 	if err != nil {
@@ -115,10 +118,7 @@ func Run(runner executil.Runner, rows []string, args []string) (selectedName str
 
 	stdout, _, runErr := runner.Run("sh", "-c", script)
 	if runErr != nil {
-		if isExitStatus1(runErr) {
-			return "", nil
-		}
-		return "", runErr
+		return "", nil
 	}
 
 	line := strings.TrimRight(stdout, "\n")
@@ -128,18 +128,6 @@ func Run(runner executil.Runner, rows []string, args []string) (selectedName str
 
 	name, _, _ := strings.Cut(line, "\t")
 	return name, nil
-}
-
-// isExitStatus1 reports whether err's message indicates fzf exited with
-// status 1 specifically (its "no selection" status, which Esc/cancel
-// produces) — not merely containing "exit status 1" as a substring, which
-// would also (wrongly) match exit statuses 10-19. RealRunner wraps the
-// underlying *exec.ExitError's "exit status N" message as
-// "exit status N\nstderr: ...", and tests exercise bare "exit status N"
-// errors directly, so both forms are checked.
-func isExitStatus1(err error) bool {
-	msg := err.Error()
-	return msg == "exit status 1" || strings.HasPrefix(msg, "exit status 1\n") || strings.HasPrefix(msg, "exit status 1 ")
 }
 
 // StartReloadPoller starts a background goroutine that, once per second,

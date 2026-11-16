@@ -176,31 +176,42 @@ func TestRun_NoSelectionExitStatus1_ReturnsEmptyNoError(t *testing.T) {
 	}
 }
 
-func TestRun_OtherNonZeroExit_ReturnsError(t *testing.T) {
-	runner := &executil.FakeRunner{
-		Responses: func(call executil.Call) (string, string, error) {
-			return "", "", errors.New("exit status 2")
-		},
-	}
-
-	_, err := Run(runner, []string{"a\tb\tc"}, []string{})
-	if err == nil {
-		t.Errorf("Run error = nil, want non-nil for a non-cancel failure")
-	}
-}
-
-func TestRun_ExitStatus10_ReturnsError_NotMistakenForExitStatus1(t *testing.T) {
-	// Regression: a naive strings.Contains(msg, "exit status 1") check
-	// would wrongly treat "exit status 10" as the exit-1 cancel case.
+func TestRun_ExitStatus10_TreatedAsCancelLikeBash(t *testing.T) {
+	// Bash's `... fzf ...)" || return 0` doesn't discriminate by exit
+	// code — any nonzero fzf exit is a graceful "no selection", not just
+	// status 1. This pins that exit status 10 is one of them.
 	runner := &executil.FakeRunner{
 		Responses: func(call executil.Call) (string, string, error) {
 			return "", "", errors.New("exit status 10")
 		},
 	}
 
-	_, err := Run(runner, []string{"a\tb\tc"}, []string{})
-	if err == nil {
-		t.Errorf("Run error = nil, want non-nil — exit status 10 is not the exit-1 cancel case")
+	name, err := Run(runner, []string{"a\tb\tc"}, []string{})
+	if err != nil {
+		t.Errorf("Run error = %v, want nil (any nonzero fzf exit means cancel, not a failure)", err)
+	}
+	if name != "" {
+		t.Errorf("Run selectedName = %q, want empty", name)
+	}
+}
+
+func TestRun_ExitStatus130_SIGINTFromCtrlC_TreatedAsCancel(t *testing.T) {
+	// Regression: Ctrl-C while the fzf picker is up sends SIGINT, which
+	// exits with status 130 (128+SIGINT), not 1. Bash's `|| return 0`
+	// swallows this the same as Esc; an earlier Go version special-cased
+	// only "exit status 1" and surfaced this as a hard error instead.
+	runner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			return "", "", errors.New("exit status 130\nstderr: ")
+		},
+	}
+
+	name, err := Run(runner, []string{"a\tb\tc"}, []string{})
+	if err != nil {
+		t.Errorf("Run error = %v, want nil (Ctrl-C/SIGINT means cancel, not a failure)", err)
+	}
+	if name != "" {
+		t.Errorf("Run selectedName = %q, want empty", name)
 	}
 }
 
