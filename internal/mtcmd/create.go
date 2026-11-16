@@ -2,6 +2,7 @@ package mtcmd
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -37,6 +38,13 @@ func Create(d *Deps, name, baseBranchFlag, description, cwd string, insideTmux b
 	}
 
 	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
+		if err := d.Git.WorktreePrune(repoRoot); err != nil {
+			return err
+		}
+		if err := d.Git.FetchOrigin(repoRoot, baseBranch); err != nil {
+			fmt.Fprintln(os.Stderr, "motree: fetch failed, using local refs")
+		}
+
 		if d.Git.BranchExists(repoRoot, branchName) {
 			if err := d.Git.WorktreeAdd(repoRoot, worktreePath, branchName); err != nil {
 				return err

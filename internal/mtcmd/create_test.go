@@ -72,6 +72,8 @@ func TestCreate_BrandNewSessionNewRepo_CreatesWorktreeBranchAndWindow(t *testing
 		Queue: []executil.Response{
 			{Stdout: repoRoot + "\n"},              // rev-parse --show-toplevel
 			{Stdout: "refs/remotes/origin/main\n"}, // symbolic-ref (DefaultBranch)
+			{},                                     // worktree prune
+			{},                                     // fetch origin main
 			{Err: errors.New("no such ref")},       // show-ref (BranchExists -> false)
 			{},                                     // worktree add -b
 			{},                                     // branch --unset-upstream
@@ -97,6 +99,8 @@ func TestCreate_BrandNewSessionNewRepo_CreatesWorktreeBranchAndWindow(t *testing
 	wantGitCalls := []executil.Call{
 		{Name: "git", Args: []string{"-C", repoRoot, "rev-parse", "--show-toplevel"}},
 		{Name: "git", Args: []string{"-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "prune"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "fetch", "origin", "main"}},
 		{Name: "git", Args: []string{"-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/" + name}},
 		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "add", "-b", name, worktreePath, "origin/main"}},
 		{Name: "git", Args: []string{"-C", worktreePath, "branch", "--unset-upstream"}},
@@ -257,6 +261,8 @@ func TestCreate_BaseBranchFlagOverridesOriginHEAD(t *testing.T) {
 	gitRunner := &executil.FakeRunner{
 		Queue: []executil.Response{
 			{Stdout: repoRoot + "\n"},        // rev-parse --show-toplevel
+			{},                               // worktree prune
+			{},                               // fetch origin develop
 			{Err: errors.New("no such ref")}, // show-ref (BranchExists -> false)
 			{},                               // worktree add -b ... origin/develop
 			{},                               // branch --unset-upstream
@@ -278,6 +284,8 @@ func TestCreate_BaseBranchFlagOverridesOriginHEAD(t *testing.T) {
 
 	wantGitCalls := []executil.Call{
 		{Name: "git", Args: []string{"-C", repoRoot, "rev-parse", "--show-toplevel"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "prune"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "fetch", "origin", "develop"}},
 		{Name: "git", Args: []string{"-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/" + name}},
 		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "add", "-b", name, worktreePath, "origin/develop"}},
 		{Name: "git", Args: []string{"-C", worktreePath, "branch", "--unset-upstream"}},
@@ -346,6 +354,8 @@ func TestCreate_UpdatesStateUpsertAndEnsureRepo(t *testing.T) {
 		Queue: []executil.Response{
 			{Stdout: repoRoot + "\n"},
 			{Stdout: "refs/remotes/origin/main\n"},
+			{}, // worktree prune
+			{}, // fetch origin main
 			{Err: errors.New("no such ref")},
 			{},
 			{},
@@ -381,5 +391,100 @@ func TestCreate_UpdatesStateUpsertAndEnsureRepo(t *testing.T) {
 	wantRepos := []state.Repo{{RepoPath: repoRoot, WorktreePath: worktreePath}}
 	if !reflect.DeepEqual(sess.Repos, wantRepos) {
 		t.Errorf("Sessions[0].Repos = %+v, want %+v", sess.Repos, wantRepos)
+	}
+}
+
+func TestCreate_NewWorktree_PrunesAndFetchesOriginBeforeCreating(t *testing.T) {
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	name := "myname"
+	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: repoRoot + "\n"},              // rev-parse --show-toplevel
+			{Stdout: "refs/remotes/origin/main\n"}, // symbolic-ref (DefaultBranch)
+			{},                                     // worktree prune
+			{},                                     // fetch origin main
+			{Err: errors.New("no such ref")},       // show-ref (BranchExists -> false)
+			{},                                     // worktree add -b
+			{},                                     // branch --unset-upstream
+		},
+	}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")},
+			{Stdout: "$11\n"},
+			{}, {}, {}, {},
+			{},
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	if err := Create(d, name, "", "", repoRoot, false, 1); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	wantGitCalls := []executil.Call{
+		{Name: "git", Args: []string{"-C", repoRoot, "rev-parse", "--show-toplevel"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "prune"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "fetch", "origin", "main"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/" + name}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "add", "-b", name, worktreePath, "origin/main"}},
+		{Name: "git", Args: []string{"-C", worktreePath, "branch", "--unset-upstream"}},
+	}
+	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
+		t.Errorf("git Calls = %+v, want %+v (prune, then fetch, must both happen before the branch-exists check / worktree-add call, and only on the new-worktree path)", gitRunner.Calls, wantGitCalls)
+	}
+}
+
+func TestCreate_FetchFailure_IsNonFatal_WarnsAndContinuesWithLocalRefs(t *testing.T) {
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	name := "myname"
+	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: repoRoot + "\n"},                // rev-parse --show-toplevel
+			{Stdout: "refs/remotes/origin/main\n"},   // symbolic-ref (DefaultBranch)
+			{},                                       // worktree prune
+			{Err: errors.New("network unreachable")}, // fetch origin main -> fails
+			{Err: errors.New("no such ref")},         // show-ref (BranchExists -> false)
+			{},                                       // worktree add -b
+			{},                                       // branch --unset-upstream
+		},
+	}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")},
+			{Stdout: "$13\n"},
+			{}, {}, {}, {},
+			{},
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	err := Create(d, name, "", "", repoRoot, false, 1)
+	if err != nil {
+		t.Fatalf("Create returned error: %v, want nil — a fetch failure must be non-fatal", err)
+	}
+
+	wantGitCalls := []executil.Call{
+		{Name: "git", Args: []string{"-C", repoRoot, "rev-parse", "--show-toplevel"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "prune"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "fetch", "origin", "main"}},
+		{Name: "git", Args: []string{"-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/" + name}},
+		{Name: "git", Args: []string{"-C", repoRoot, "worktree", "add", "-b", name, worktreePath, "origin/main"}},
+		{Name: "git", Args: []string{"-C", worktreePath, "branch", "--unset-upstream"}},
+	}
+	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
+		t.Errorf("git Calls = %+v, want %+v (branch/worktree creation must still proceed despite the fetch failure)", gitRunner.Calls, wantGitCalls)
+	}
+
+	if len(d.State.Sessions) != 1 {
+		t.Fatalf("State.Sessions = %+v, want exactly 1 (Create must still complete the session/repo bookkeeping)", d.State.Sessions)
 	}
 }
