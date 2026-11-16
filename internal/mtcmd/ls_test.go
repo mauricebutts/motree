@@ -2,6 +2,7 @@ package mtcmd
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/mauricebutts/motree/internal/executil"
@@ -293,13 +294,8 @@ func TestPreview_ClaudePaneFound_ReturnsDescriptionDividerAndPaneTail(t *testing
 		{Name: "tmux", Args: []string{"list-panes", "-t", "$1:foo", "-F", "#{pane_index} #{pane_current_command}"}},
 		{Name: "tmux", Args: []string{"capture-pane", "-t", "$1:foo.0", "-p"}},
 	}
-	if len(tmuxRunner.Calls) != len(wantTmuxCalls) {
-		t.Fatalf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)
-	}
-	for i, c := range wantTmuxCalls {
-		if tmuxRunner.Calls[i].Name != c.Name {
-			t.Errorf("Calls[%d].Name = %q, want %q", i, tmuxRunner.Calls[i].Name, c.Name)
-		}
+	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
+		t.Errorf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)
 	}
 }
 
