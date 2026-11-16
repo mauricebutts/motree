@@ -20,6 +20,14 @@ var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 // original bash tool, including its "it's" (not "its") — do not "fix" it.
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
+// ErrNoPRFound is the sentinel PR returns after it has already printed
+// "no pr found" to stdout itself (the original bash do_pr echoes that exact
+// line, then returns 1). It exists for the same reason cmd/mt/main.go's own
+// errUsageShown does: main's dispatch prints every other returned error via
+// "mt: %v", which would put a second line on the screen for this one event.
+// main checks for this sentinel and exits 1 silently instead.
+var ErrNoPRFound = errors.New("no pr found")
+
 // PR checks prNumber out into its own "pr-<prNumber>" session/worktree for
 // review. It requires a numeric prNumber and the gh CLI; if the worktree
 // doesn't exist yet, it resolves the PR's head branch via gh.PRHeadRef —
@@ -61,7 +69,7 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 		}
 		if headRef == "" {
 			fmt.Println("no pr found")
-			return errors.New("no pr found")
+			return ErrNoPRFound
 		}
 
 		if err := d.Git.WorktreePrune(repoRoot); err != nil {
@@ -89,5 +97,5 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 		}
 	}
 
-	return d.Tmux.AttachOrSwitch(sessionID, insideTmux)
+	return saveAndAttach(d, sessionID, insideTmux)
 }

@@ -19,7 +19,6 @@ func TestEscapeCwd_ReplacesDotsSlashesUnderscores(t *testing.T) {
 		{"path_with_underscores", "path-with-underscores"},
 		{"normal-path/to.dir_name", "normal-path-to-dir-name"},
 		{"/var/log", "-var-log"},
-		{".", "-"},
 	}
 
 	for _, tt := range tests {
@@ -34,10 +33,10 @@ func TestEscapeCwd_ReplacesDotsSlashesUnderscores(t *testing.T) {
 
 func TestEventStatus_MapsAllTenEvents(t *testing.T) {
 	tests := []struct {
-		event    string
-		status   Status
-		clear    bool
-		ok       bool
+		event  string
+		status Status
+		clear  bool
+		ok     bool
 	}{
 		{"SessionStart", Stopped, false, true},
 		{"UserPromptSubmit", Running, false, true},

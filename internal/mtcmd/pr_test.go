@@ -142,8 +142,11 @@ func TestPR_HeadRefNotFound_PrintsNoPrFound_CreatesNothing(t *testing.T) {
 		err = PR(d, gh, prNumber, repoRoot, false, 1)
 	})
 
-	if err == nil {
-		t.Fatalf("PR returned nil error, want an error — no pr found")
+	// The returned error must be the ErrNoPRFound sentinel, so main's
+	// dispatch knows PR already printed the user-facing line itself and
+	// skips its own "mt: %v" print — one event, one line of output.
+	if !errors.Is(err, ErrNoPRFound) {
+		t.Fatalf("PR error = %v, want ErrNoPRFound", err)
 	}
 	if out != "no pr found\n" {
 		t.Errorf("stdout = %q, want %q", out, "no pr found\n")
@@ -238,7 +241,7 @@ func TestPR_HappyPath_DetachedWorktreeThenGhCheckout(t *testing.T) {
 		{Name: "tmux", Args: []string{"split-window", "-v", "-t", windowTarget + ".1", "-c", worktreePath}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".0", "nvim .", "C-m"}},
 		{Name: "tmux", Args: []string{"send-keys", "-t", windowTarget + ".2", "claude 'Please give a high level explanation of this PR and it'\\''s business purpose'", "C-m"}},
-		{Name: "tmux", Args: []string{"attach-session", "-t", "$1"}},
+		{Name: "tmux", Args: []string{"attach-session", "-t", "$1"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(tmuxRunner.Calls, wantTmuxCalls) {
 		t.Errorf("tmux Calls = %+v, want %+v", tmuxRunner.Calls, wantTmuxCalls)

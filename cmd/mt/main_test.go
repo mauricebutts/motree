@@ -190,6 +190,44 @@ esac
 const fzfStub = `head -n 1
 `
 
+// ghStubNoPR fakes `gh pr view ... --jq .headRefName` returning nothing,
+// which is how gh reports a PR number that doesn't exist — the case
+// mtcmd.PR answers with the bash-compatible "no pr found" line.
+const ghStubNoPR = `exit 0
+`
+
+// TestMain_PR_NoPrFound_PrintsExactlyOneLine covers the sentinel-error
+// plumbing: mtcmd.PR prints "no pr found" itself and returns
+// mtcmd.ErrNoPRFound, and main's reportAndExit must recognise that
+// sentinel and NOT also print its own "mt: no pr found" — one event, one
+// line of output, exit 1.
+func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubNoPR)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := t.TempDir()
+	runGit(t, repoDir, "init", "-q")
+
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + filepath.Join(t.TempDir(), "state.json"),
+	}
+
+	res := runMt(t, repoDir, env, "pr", "4242")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	if res.stdout != "no pr found\n" {
+		t.Errorf("stdout = %q, want exactly %q", res.stdout, "no pr found\n")
+	}
+	if strings.Contains(res.stderr, "no pr found") {
+		t.Errorf("stderr = %q, want no second copy of the message — mtcmd.ErrNoPRFound must suppress main's own print", res.stderr)
+	}
+}
+
 func TestMain_CreateAndRm_PersistStateToDiskAcrossInvocations(t *testing.T) {
 	stubDir := t.TempDir()
 	writeStub(t, stubDir, "tmux", tmuxStub)
