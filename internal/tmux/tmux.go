@@ -1,6 +1,5 @@
 // Package tmux wraps the tmux subprocess calls needed for session/window/
-// pane management, mirroring the behavior of the original bash motree
-// tool's tmux usage (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
+// pane management (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
 package tmux
 
 import (
@@ -329,25 +328,23 @@ func cutLastDot(s string) (before, after string, ok bool) {
 
 // HasChildProcess runs "pgrep -P <pid>" and reports whether it exited 0
 // (meaning pid has at least one running child process). Never returns an
-// error: a failed/erroring pgrep means "no child", matching bash's
-// `pgrep ... >/dev/null 2>&1` being checked only for its exit status.
+// error: a failed/erroring pgrep means "no child" — only its exit status
+// is checked.
 func (t Tmux) HasChildProcess(pid string) bool {
 	_, _, err := t.Runner.Run("pgrep", "-P", pid)
 	return err == nil
 }
 
-// ZoomOff un-zooms windowTarget's pane if it's currently zoomed, porting
-// the original bash mt_zoom_off exactly: a no-op if windowTarget is empty
-// or its zoomed-flag can't be queried, and a toggle (tmux resize-pane -Z)
-// only when the flag reads "1".
+// ZoomOff un-zooms windowTarget's pane if it's currently zoomed: a no-op
+// if windowTarget is empty or its zoomed-flag can't be queried, and a
+// toggle (tmux resize-pane -Z) only when the flag reads "1".
 func (t Tmux) ZoomOff(windowTarget string) error {
 	return t.toggleZoom(windowTarget, "1")
 }
 
-// ZoomOn zooms windowTarget's pane if it isn't already, porting the
-// original bash mt_zoom_on exactly: a no-op if windowTarget is empty or
-// its zoomed-flag can't be queried, and a toggle (tmux resize-pane -Z)
-// only when the flag reads "0".
+// ZoomOn zooms windowTarget's pane if it isn't already: a no-op if
+// windowTarget is empty or its zoomed-flag can't be queried, and a toggle
+// (tmux resize-pane -Z) only when the flag reads "0".
 func (t Tmux) ZoomOn(windowTarget string) error {
 	return t.toggleZoom(windowTarget, "0")
 }
@@ -355,8 +352,7 @@ func (t Tmux) ZoomOn(windowTarget string) error {
 // toggleZoom reads windowTarget's #{window_zoomed_flag} and, only if it
 // equals triggerFlag, runs "tmux resize-pane -Z -t <windowTarget>" to
 // toggle it. A query error is treated as "nothing to toggle" (returns
-// nil), matching bash's "|| return 0" on the same query in both
-// mt_zoom_off and mt_zoom_on.
+// nil).
 func (t Tmux) toggleZoom(windowTarget, triggerFlag string) error {
 	if windowTarget == "" {
 		return nil

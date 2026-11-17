@@ -26,10 +26,10 @@ const cmdDockedOption = "@mt_cmd_docked"
 // WindowTargetFor resolves name's window target — its tmux session ID,
 // plus the window named after its first tracked repo's basename — for
 // use as a `tmux select-window`/`select-pane` target. found is false if
-// name has no live tmux session, or has one but no tracked repos. Ported
-// from the original bash mt_window_target_for, session-liveness checked
-// before repos (not the reverse) so a session with no running tmux
-// session at all short-circuits before even looking at its repos.
+// name has no live tmux session, or has one but no tracked repos.
+// Session-liveness is checked before repos (not the reverse) so a session
+// with no running tmux session at all short-circuits before even looking
+// at its repos.
 func WindowTargetFor(d *Deps, name string) (target string, found bool) {
 	sessionID, err := d.Tmux.FindSessionID(name)
 	if err != nil || sessionID == "" {
@@ -45,20 +45,17 @@ func WindowTargetFor(d *Deps, name string) (target string, found bool) {
 }
 
 // Dock makes the command center's right pane (CmdSessionName's "cmd"
-// window, pane index 1) mirror targetName's claude pane. Ported from the
-// original bash do_cmd_dock.
+// window, pane index 1) mirror targetName's claude pane.
 //
-// Dock returns a non-nil error for the two cases bash's own do_cmd_dock
-// returns 1 for rather than falling through to its `|| true`-guarded
-// body: an empty targetName, and not being able to locate the running
-// command center itself (callers only ever reach __mt_cmd_dock through
-// its own fzf picker, which can't exist without that session, so this
-// second case is defensive, not expected in practice). Every other
-// "can't proceed" case — no live session for targetName, no claude pane
-// — reports via ShowMessage into the right pane and returns nil, matching
-// bash's `do_cmd_dock ... || true` throughout: a failed tmux call along
-// the way (e.g. a stale pane disappearing mid-dock) is likewise swallowed
-// rather than surfaced, exactly as bash's own `|| true` suffixes do.
+// Dock returns a non-nil error for exactly two cases: an empty targetName,
+// and not being able to locate the running command center itself (callers
+// only ever reach __mt_cmd_dock through its own fzf picker, which can't
+// exist without that session, so this second case is defensive, not
+// expected in practice). Every other "can't proceed" case — no live
+// session for targetName, no claude pane — reports via ShowMessage into
+// the right pane and returns nil: a failed tmux call along the way (e.g. a
+// stale pane disappearing mid-dock) is likewise swallowed rather than
+// surfaced.
 func Dock(d *Deps, targetName string) error {
 	if targetName == "" {
 		return fmt.Errorf("mt cmd: dock requires a target name")
@@ -120,16 +117,17 @@ func Dock(d *Deps, targetName string) error {
 	return nil
 }
 
-// cmdListFzfArgs builds `__mt_cmd_list`'s fzf argv, ported directly from
-// the original bash do_cmd_list's fzf invocation:
+// cmdListFzfArgs builds `__mt_cmd_list`'s fzf argv:
 //
-//	fzf --delimiter='\t' --with-nth=2 --height=100% --reverse --track --id-nth=1 $listen_flag \
-//	  --bind "enter:execute-silent('$script_path' __mt_cmd_dock {1})" \
-//	  --bind "ctrl-c:execute-silent('$script_path' __mt_cmd_quit)+abort" \
+//	fzf --delimiter='\t' --with-nth=2 --height=100% --reverse --track --id-nth=1 --read0 --print0 $listen_flag \
+//	  --bind "enter:execute-silent('<mt binary>' __mt_cmd_dock {1})" \
+//	  --bind "ctrl-c:execute-silent('<mt binary>' __mt_cmd_quit)+abort" \
 //	  --header='enter: show the selected claude pane on the right  ·  ctrl-c: quit command center'
 //
-// mtBinaryPath is quoted (via tmux.Quote) in place of the original's
-// "$script_path". socketPath is ignored when listen is false.
+// --read0/--print0 are needed for multi-line rows — see fzfutil.Run.
+//
+// mtBinaryPath is quoted (via tmux.Quote). socketPath is ignored when
+// listen is false.
 func cmdListFzfArgs(mtBinaryPath string, listen bool, socketPath string) []string {
 	args := []string{
 		`--delimiter=\t`,
@@ -138,6 +136,8 @@ func cmdListFzfArgs(mtBinaryPath string, listen bool, socketPath string) []strin
 		"--reverse",
 		"--track",
 		"--id-nth=1",
+		"--read0",
+		"--print0",
 	}
 
 	if listen {
@@ -158,8 +158,7 @@ func cmdListFzfArgs(mtBinaryPath string, listen bool, socketPath string) []strin
 // reloaded the same way `mt ls` is, whose enter/ctrl-c bindings drive
 // Dock/Quit directly via execute-silent — List itself never looks at
 // which row (if any) fzf reports selected, since every action it causes
-// already happened through those bindings while fzf was running. Ported
-// from the original bash do_cmd_list.
+// already happened through those bindings while fzf was running.
 func List(d *Deps, mtBinaryPath string) error {
 	if len(d.State.SortedSessions()) == 0 {
 		fmt.Fprintln(os.Stderr, "mt: no sessions tracked yet")
@@ -203,8 +202,7 @@ func List(d *Deps, mtBinaryPath string) error {
 
 // Quit tears down the command center: un-zooms whatever session is
 // currently docked (if any), then kills CmdSessionName itself. A no-op if
-// the command center isn't running. Ported from the original bash
-// do_cmd_quit.
+// the command center isn't running.
 func Quit(d *Deps) error {
 	cmdSessionID, err := d.Tmux.FindSessionID(CmdSessionName)
 	if err != nil {
@@ -225,14 +223,12 @@ func Quit(d *Deps) error {
 
 // Cmd is the full `mt cmd` entrypoint: finds or creates the command
 // center (CmdSessionName's "cmd" window, with the picker in pane 0 and
-// the mirror pane at index 1), then attaches to it. Ported from the
-// original bash do_cmd.
+// the mirror pane at index 1), then attaches to it.
 //
 // On first creation, the new window's cwd is this process's own working
-// directory (os.Getwd) — the original bash `tmux new-session` here omits
-// "-c" entirely, which makes tmux default the session's cwd to the
-// invoking process's own cwd; os.Getwd is that same default, reached
-// explicitly because this port's NewSession always takes a cwd argument.
+// directory (os.Getwd) — the same default tmux's own `new-session` falls
+// back to when its "-c" flag is omitted, reached explicitly here because
+// NewSession always takes a cwd argument.
 func Cmd(d *Deps, mtBinaryPath string, insideTmux bool) error {
 	sessionID, err := d.Tmux.FindSessionID(CmdSessionName)
 	if err != nil {
@@ -262,9 +258,8 @@ func Cmd(d *Deps, mtBinaryPath string, insideTmux bool) error {
 		if err := d.Tmux.SendKeys(windowTarget+".0", pickerCmd); err != nil {
 			return err
 		}
-		// Best-effort, matching bash's "|| true" on this same select-pane:
-		// a failed focus of the picker pane shouldn't abort the whole `mt
-		// cmd` invocation.
+		// Best-effort: a failed focus of the picker pane shouldn't abort
+		// the whole `mt cmd` invocation.
 		_ = d.Tmux.SelectPane(windowTarget + ".0")
 	} else {
 		windowTarget := sessionID + ":cmd"

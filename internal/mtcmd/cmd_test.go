@@ -393,6 +393,8 @@ func TestCmdListFzfArgs_IncludesDockAndQuitBindings(t *testing.T) {
 		"--reverse",
 		"--track",
 		"--id-nth=1",
+		"--read0",
+		"--print0",
 		"--listen=/tmp/mt-cmd.sock",
 		"--bind=enter:execute-silent('/usr/local/bin/mt' __mt_cmd_dock {1})",
 		"--bind=ctrl-c:execute-silent('/usr/local/bin/mt' __mt_cmd_quit)+abort",
@@ -531,10 +533,10 @@ func TestCmd_ExistingSession_LivePicker_LeavesAlone(t *testing.T) {
 }
 
 // TestCmd_ReservedNameCollision_ReturnsError is not in the plan's named
-// test list for this task, but ports a real bash do_cmd branch (the
-// reserved-session-name collision guard) that every other Cmd test above
-// bypasses by using an empty State — without it, that guard would ship
-// unverified. See the ledger for this addition.
+// test list for this task, but covers the reserved-session-name collision
+// guard that every other Cmd test above bypasses by using an empty State —
+// without it, that guard would ship unverified. See the ledger for this
+// addition.
 func TestCmd_ReservedNameCollision_ReturnsError(t *testing.T) {
 	fake := &executil.FakeRunner{
 		Queue: []executil.Response{

@@ -51,8 +51,11 @@ func TestBuildArgs_WithoutListen_OmitsListenFlag(t *testing.T) {
 	if !contains(args, wantPreview) {
 		t.Errorf("args = %+v, want to contain %q", args, wantPreview)
 	}
-	if !contains(args, "--preview-window=down,30,wrap") {
-		t.Errorf("args = %+v, want to contain --preview-window=down,30,wrap", args)
+	if !contains(args, "--preview-window=down,25,wrap,follow") {
+		t.Errorf("args = %+v, want to contain --preview-window=down,25,wrap,follow", args)
+	}
+	if !contains(args, "--read0") || !contains(args, "--print0") {
+		t.Errorf("args = %+v, want --read0 and --print0 (multi-line subagent rows need NUL framing)", args)
 	}
 }
 
@@ -101,8 +104,8 @@ func TestSupportsListen_TrueWhenFzfHelpMentionsListen(t *testing.T) {
 
 func TestRun_FeedsRowsAsStdin_ReturnsSelectedName(t *testing.T) {
 	rows := []string{"myfeature\tsome label\tsome desc", "other\tother label\tother desc"}
-	args := []string{"--delimiter=\t", "--with-nth=2"}
-	wantData := strings.Join(rows, "\n") + "\n"
+	args := []string{"--delimiter=\t", "--with-nth=2", "--read0", "--print0"}
+	wantData := strings.Join(rows, "\x00") + "\x00"
 
 	var capturedScript, capturedFileContents string
 	var readErr error
@@ -122,7 +125,7 @@ func TestRun_FeedsRowsAsStdin_ReturnsSelectedName(t *testing.T) {
 					capturedFileContents = string(data)
 				}
 			}
-			return "myfeature\tsome label\tsome desc\n", "", nil
+			return "myfeature\tsome label\tsome desc\x00", "", nil
 		},
 	}
 
@@ -145,6 +148,46 @@ func TestRun_FeedsRowsAsStdin_ReturnsSelectedName(t *testing.T) {
 	}
 }
 
+// TestRun_RowWithEmbeddedNewline_StillExtractsName pins the reason rows
+// are NUL- rather than newline-joined: a row's label can contain a literal
+// "\n" (the subagent-status line RenderRows appends beneath a session's
+// own label), and that must survive intact in the temp rows file fed to
+// fzf, with name extraction from fzf's (NUL-terminated) selection still
+// correctly stopping at the first tab rather than the embedded newline.
+func TestRun_RowWithEmbeddedNewline_StillExtractsName(t *testing.T) {
+	rows := []string{"myfeature\tsome label\nsubagent line\tsome desc"}
+	args := []string{"--delimiter=\t", "--with-nth=2", "--read0", "--print0"}
+
+	var capturedFileContents string
+	runner := &executil.FakeRunner{
+		Responses: func(call executil.Call) (string, string, error) {
+			if call.Name == "sh" && len(call.Args) == 2 {
+				script := call.Args[1]
+				idx := strings.LastIndex(script, "< ")
+				if idx != -1 {
+					tmpPath := strings.Trim(strings.TrimSpace(script[idx+2:]), "'")
+					data, _ := os.ReadFile(tmpPath)
+					capturedFileContents = string(data)
+				}
+			}
+			return "myfeature\tsome label\nsubagent line\tsome desc\x00", "", nil
+		},
+	}
+
+	name, err := Run(runner, rows, args)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if name != "myfeature" {
+		t.Errorf("Run selectedName = %q, want %q (must stop at the first tab, not the embedded newline)", name, "myfeature")
+	}
+
+	wantFileContents := rows[0] + "\x00"
+	if capturedFileContents != wantFileContents {
+		t.Errorf("temp rows file contents = %q, want %q — the embedded newline must survive NUL framing intact", capturedFileContents, wantFileContents)
+	}
+}
+
 func TestRun_NoSelectionExitStatus1_ReturnsEmptyNoError(t *testing.T) {
 	runner := &executil.FakeRunner{
 		Responses: func(call executil.Call) (string, string, error) {
@@ -161,10 +204,10 @@ func TestRun_NoSelectionExitStatus1_ReturnsEmptyNoError(t *testing.T) {
 	}
 }
 
-func TestRun_ExitStatus10_TreatedAsCancelLikeBash(t *testing.T) {
-	// Bash's `... fzf ...)" || return 0` doesn't discriminate by exit
-	// code — any nonzero fzf exit is a graceful "no selection", not just
-	// status 1. This pins that exit status 10 is one of them.
+func TestRun_ExitStatus10_TreatedAsCancel(t *testing.T) {
+	// Run doesn't discriminate by exit code — any nonzero fzf exit is a
+	// graceful "no selection", not just status 1. This pins that exit
+	// status 10 is one of them.
 	runner := &executil.FakeRunner{
 		Responses: func(call executil.Call) (string, string, error) {
 			return "", "", errors.New("exit status 10")
@@ -182,9 +225,9 @@ func TestRun_ExitStatus10_TreatedAsCancelLikeBash(t *testing.T) {
 
 func TestRun_ExitStatus130_SIGINTFromCtrlC_TreatedAsCancel(t *testing.T) {
 	// Regression: Ctrl-C while the fzf picker is up sends SIGINT, which
-	// exits with status 130 (128+SIGINT), not 1. Bash's `|| return 0`
-	// swallows this the same as Esc; an earlier Go version special-cased
-	// only "exit status 1" and surfaced this as a hard error instead.
+	// exits with status 130 (128+SIGINT), not 1. This must be swallowed
+	// the same as Esc; an earlier version special-cased only "exit status
+	// 1" and surfaced this as a hard error instead.
 	runner := &executil.FakeRunner{
 		Responses: func(call executil.Call) (string, string, error) {
 			return "", "", errors.New("exit status 130\nstderr: ")

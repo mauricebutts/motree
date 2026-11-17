@@ -91,6 +91,12 @@ func contains(items []string, target string) bool {
 	return countOccurrences(items, target) > 0
 }
 
+func TestHookEvents_IncludesSubagentStart(t *testing.T) {
+	if !contains(HookEvents, "SubagentStart") {
+		t.Errorf("HookEvents = %v, want it to include %q", HookEvents, "SubagentStart")
+	}
+}
+
 func TestMerge_AddsHookForEveryEventWithoutExisting(t *testing.T) {
 	path := writeFixture(t)
 

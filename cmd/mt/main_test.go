@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mauricebutts/motree/internal/state"
+	"github.com/mauricebutts/motree/internal/statusfile"
 )
 
 // mtBinaryPath is the path to the mt binary built once by TestMain, shared
@@ -122,9 +123,7 @@ func TestMain_NoArgs_PrintsUsageAndExitsNonZero(t *testing.T) {
 
 // TestMain_SpawnPromptStartingWithDash_RejectsWithExactMessage locks down
 // the exact-text error `runSpawn` prints when a spawn prompt starts with
-// "-" (ported from the original bash do_spawn's
-// `case "$prompt" in -*) echo "mt: <prompt> must come before any flags"`),
-// so a future edit can't silently drop or reword it without a test
+// "-", so a future edit can't silently drop or reword it without a test
 // failing. This check runs before runSpawn ever touches git/tmux/state, so
 // no stubbing is needed beyond the usual baseEnv.
 func TestMain_SpawnPromptStartingWithDash_RejectsWithExactMessage(t *testing.T) {
@@ -192,7 +191,7 @@ const fzfStub = `head -n 1
 
 // ghStubNoPR fakes `gh pr view ... --jq .headRefName` returning nothing,
 // which is how gh reports a PR number that doesn't exist — the case
-// mtcmd.PR answers with the bash-compatible "no pr found" line.
+// mtcmd.PR answers with its own "no pr found" line.
 const ghStubNoPR = `exit 0
 `
 
@@ -321,5 +320,65 @@ func TestMain_CreateAndRm_PersistStateToDiskAcrossInvocations(t *testing.T) {
 	worktreePath := filepath.Join(repoDir, ".claude", "worktrees", "demo-session")
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Errorf("worktree %s still exists after `mt rm`, want it removed", worktreePath)
+	}
+}
+
+// TestMtRows_NULTerminatesEachRecord is a regression test: fzf is launched
+// with --read0 (see fzfutil.BuildArgs), so its live-reload binding's
+// `mt __mt_rows` output must be NUL- rather than newline-terminated per
+// row, or a reload merges every tracked session into a single record the
+// instant one of them has a subagent line (which embeds a literal "\n" in
+// its own row) — the bug looked like every session but the first vanishing
+// from `mt ls` shortly after it opened.
+func TestMtRows_NULTerminatesEachRecord(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	t.Setenv("MOTREE_STATE_FILE", stateFile)
+
+	worktreeA := t.TempDir()
+	worktreeB := t.TempDir()
+
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "alpha", LastOpened: 200, Repos: []state.Repo{{RepoPath: "/repos/alpha", WorktreePath: worktreeA}}},
+			{Name: "beta", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/repos/beta", WorktreePath: worktreeB}}},
+		},
+	}
+	if err := st.Save(stateFile); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// alpha has a live subagent, so its row gets an embedded "\n" — the
+	// exact condition that broke the newline-only framing.
+	if err := statusfile.Write(worktreeA, statusfile.Running); err != nil {
+		t.Fatalf("statusfile.Write: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktreeA, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("statusfile.WriteSubagent: %v", err)
+	}
+
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + stateFile,
+	}
+
+	res := runMt(t, t.TempDir(), env, "__mt_rows")
+	if res.exitCode != 0 {
+		t.Fatalf("mt __mt_rows exited %d, stderr=%q", res.exitCode, res.stderr)
+	}
+
+	trimmed := strings.TrimSuffix(res.stdout, "\x00")
+	records := strings.Split(trimmed, "\x00")
+	if len(records) != 2 {
+		t.Fatalf("got %d NUL-delimited records, want 2 (one per session): %q", len(records), res.stdout)
+	}
+	if !strings.HasPrefix(records[0], "alpha\t") {
+		t.Errorf("records[0] = %q, want it to start with \"alpha\\t\" (most-recently-opened first)", records[0])
+	}
+	if !strings.Contains(records[0], "\n") {
+		t.Errorf("records[0] = %q, want it to contain an embedded newline for the subagent line", records[0])
+	}
+	if !strings.HasPrefix(records[1], "beta\t") {
+		t.Errorf("records[1] = %q, want it to start with \"beta\\t\" and remain its own, separate record", records[1])
 	}
 }

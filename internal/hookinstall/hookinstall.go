@@ -15,8 +15,8 @@ import (
 // subcommand should be registered against.
 var HookEvents = []string{
 	"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-	"Notification", "PermissionRequest", "SubagentStop", "Stop",
-	"StopFailure", "SessionEnd",
+	"Notification", "PermissionRequest", "SubagentStart", "SubagentStop",
+	"Stop", "StopFailure", "SessionEnd",
 }
 
 // Merge adds a hook entry invoking "<mtBinaryPath> __hook" for every event

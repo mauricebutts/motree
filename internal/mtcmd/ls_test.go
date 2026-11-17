@@ -139,6 +139,113 @@ func TestSessionStatus_NoStatusFileAnywhere_NotFound(t *testing.T) {
 	}
 }
 
+func TestSessionStatus_AnyLiveSubagent_ShowsSubagentsEvenOverRunning(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	repos := []state.Repo{{RepoPath: "/repo/running", WorktreePath: worktree}}
+
+	if err := statusfile.Write(worktree, statusfile.Running); err != nil {
+		t.Fatalf("Write running: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	status, found := SessionStatus(repos)
+	if !found || status != statusfile.Subagents {
+		t.Errorf("SessionStatus = (%q, %v), want (%q, true) — any live subagent must win over the parent's own plain Running", status, found, statusfile.Subagents)
+	}
+}
+
+func TestSubagentLine_JoinsOneEmojiPerLiveSubagent(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	repos := []state.Repo{{RepoPath: "/repo/foo", WorktreePath: worktree}}
+
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-2", statusfile.Waiting); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	line, found := SubagentLine(repos)
+	if !found {
+		t.Fatalf("SubagentLine found = false, want true")
+	}
+
+	wantEmoji := map[rune]bool{'🏃': false, '🔔': false}
+	for _, r := range line {
+		if _, ok := wantEmoji[r]; ok {
+			wantEmoji[r] = true
+		}
+	}
+	for emoji, seen := range wantEmoji {
+		if !seen {
+			t.Errorf("SubagentLine = %q, want it to contain %q", line, string(emoji))
+		}
+	}
+	if line[:len(subagentIndent)] != subagentIndent {
+		t.Errorf("SubagentLine = %q, want it to start with the indent %q", line, subagentIndent)
+	}
+}
+
+func TestSubagentLine_NoLiveSubagents_NotFound(t *testing.T) {
+	setStatusHome(t)
+
+	repos := []state.Repo{{RepoPath: "/repo/foo", WorktreePath: t.TempDir()}}
+
+	line, found := SubagentLine(repos)
+	if found || line != "" {
+		t.Errorf("SubagentLine = (%q, %v), want (\"\", false)", line, found)
+	}
+}
+
+func TestRenderRows_EmbedsSubagentLineInSameRowAsParent(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "myfeature", Description: "d1", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/r/foo", WorktreePath: worktree}}},
+		},
+	}
+	if err := statusfile.Write(worktree, statusfile.Running); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	rows := RenderRows(st)
+	if len(rows) != 1 {
+		t.Fatalf("RenderRows returned %d rows, want 1 — the subagent line must stay part of the parent's own row (an embedded \"\\n\"), not a separate row: %v", len(rows), rows)
+	}
+
+	wantLabel := FormatLabel(st.Sessions[0], statusfile.Subagents, true) + "\n" + subagentIndent + statusEmoji[statusfile.Running]
+	wantRow := "myfeature\t" + wantLabel + "\td1"
+	if rows[0] != wantRow {
+		t.Errorf("rows[0] = %q, want %q", rows[0], wantRow)
+	}
+}
+
+func TestRenderRows_NoSubagents_NoExtraRow(t *testing.T) {
+	setStatusHome(t)
+
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "myfeature", Description: "d1", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/r/foo", WorktreePath: t.TempDir()}}},
+		},
+	}
+
+	rows := RenderRows(st)
+	if len(rows) != 1 {
+		t.Fatalf("RenderRows returned %d rows, want 1 (no subagents tracked): %v", len(rows), rows)
+	}
+}
+
 func TestFormatLabel_MatchesEmojiDateReposDescriptionFormat(t *testing.T) {
 	sess := state.Session{
 		Name:        "myfeature",

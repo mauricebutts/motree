@@ -164,56 +164,82 @@ func TestRun_NotificationUnrecognizedType_NoopNoError(t *testing.T) {
 	}
 }
 
-func TestRun_SubagentPreToolUse_NoopNoError(t *testing.T) {
+func TestRun_SubagentPreToolUse_WritesSubagentRunning(t *testing.T) {
 	cleanup := setupTempStateFile(t)
 	defer cleanup()
 
 	cwd := "/home/user/project"
-	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
+	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123"}`
 	r := bytes.NewReader([]byte(input))
 
-	err := Run(r)
-	if err != nil {
+	if err := Run(r); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	_, found, err := statusfile.Read(cwd)
+	status, found, err := statusfile.ReadSubagent(cwd, "agent-123")
 	if err != nil {
-		t.Fatalf("Read status failed: %v", err)
+		t.Fatalf("ReadSubagent failed: %v", err)
 	}
-	if found {
-		t.Fatal("status file should not be created for a subagent-originated event")
+	if !found || status != statusfile.Running {
+		t.Errorf("ReadSubagent = (%q, %v), want (%q, true)", status, found, statusfile.Running)
 	}
 }
 
-func TestRun_SubagentStop_NoopNoError(t *testing.T) {
+func TestRun_SubagentStart_WritesSubagentRunning(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "SubagentStart", "cwd": "` + cwd + `", "agent_id": "agent-123"}`
+	r := bytes.NewReader([]byte(input))
+
+	if err := Run(r); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	status, found, err := statusfile.ReadSubagent(cwd, "agent-123")
+	if err != nil {
+		t.Fatalf("ReadSubagent failed: %v", err)
+	}
+	if !found || status != statusfile.Running {
+		t.Errorf("ReadSubagent = (%q, %v), want (%q, true)", status, found, statusfile.Running)
+	}
+}
+
+func TestRun_SubagentStop_ClearsSubagentFileButNotParent(t *testing.T) {
 	cleanup := setupTempStateFile(t)
 	defer cleanup()
 
 	cwd := "/home/user/project"
 
-	// The parent session is Running when the subagent finishes.
 	if err := statusfile.Write(cwd, statusfile.Running); err != nil {
-		t.Fatalf("failed to write initial status: %v", err)
+		t.Fatalf("failed to write initial parent status: %v", err)
+	}
+	if err := statusfile.WriteSubagent(cwd, "agent-123", statusfile.Running); err != nil {
+		t.Fatalf("failed to write initial subagent status: %v", err)
 	}
 
-	input := `{"hook_event_name": "SubagentStop", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
+	input := `{"hook_event_name": "SubagentStop", "cwd": "` + cwd + `", "agent_id": "agent-123"}`
 	r := bytes.NewReader([]byte(input))
 
-	err := Run(r)
-	if err != nil {
+	if err := Run(r); err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+
+	_, found, err := statusfile.ReadSubagent(cwd, "agent-123")
+	if err != nil {
+		t.Fatalf("ReadSubagent failed: %v", err)
+	}
+	if found {
+		t.Fatal("subagent status file still exists after SubagentStop")
 	}
 
 	status, found, err := statusfile.Read(cwd)
 	if err != nil {
-		t.Fatalf("Read status failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
-	if !found {
-		t.Fatal("status file should still exist")
-	}
-	if status != statusfile.Running {
-		t.Errorf("SubagentStop should not overwrite the parent's status, got %s", status)
+	if !found || status != statusfile.Running {
+		t.Errorf("parent status = (%q, %v), want (%q, true) — SubagentStop must not touch it", status, found, statusfile.Running)
 	}
 }
 
