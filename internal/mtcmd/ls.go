@@ -165,6 +165,13 @@ func FormatLabel(sess state.Session, status statusfile.Status, found bool) strin
 // (see fzfutil.Run) renders that as a second visual line of the SAME
 // item, so it can never be independently arrow-keyed onto.
 func RenderRows(st *state.State) []string {
+	return renderRows(st, true)
+}
+
+// renderRows is RenderRows' shared implementation. includeSubagents is
+// false only for mt rm's picker (see rm.go): it has no way to act on a
+// session's subagents, so showing them there would only be noise.
+func renderRows(st *state.State, includeSubagents bool) []string {
 	sessions := st.SortedSessions()
 	rows := make([]string, 0, len(sessions))
 
@@ -172,8 +179,10 @@ func RenderRows(st *state.State) []string {
 		status, found := SessionStatus(sess.Repos)
 		label := FormatLabel(sess, status, found)
 
-		if line, ok := SubagentLine(sess.Repos); ok {
-			label += "\n" + line
+		if includeSubagents {
+			if line, ok := SubagentLine(sess.Repos); ok {
+				label += "\n" + line
+			}
 		}
 
 		desc := sess.Description

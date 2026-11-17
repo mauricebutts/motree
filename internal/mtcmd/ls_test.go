@@ -231,6 +231,40 @@ func TestRenderRows_EmbedsSubagentLineInSameRowAsParent(t *testing.T) {
 	}
 }
 
+// TestRenderRows_IncludeSubagentsFalse_OmitsSubagentLine pins mt rm's use
+// of renderRows(st, false): even when a session has live subagents, no
+// "\n"-embedded subagent line is appended, and every row stays a plain
+// single line — mt rm's picker has no --read0/--print0 multi-line item
+// support to rely on (see rmFzfArgs), and no way to act on a subagent
+// anyway.
+func TestRenderRows_IncludeSubagentsFalse_OmitsSubagentLine(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "myfeature", Description: "d1", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/r/foo", WorktreePath: worktree}}},
+		},
+	}
+	if err := statusfile.Write(worktree, statusfile.Running); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	rows := renderRows(st, false)
+	if len(rows) != 1 {
+		t.Fatalf("renderRows(st, false) returned %d rows, want 1: %v", len(rows), rows)
+	}
+
+	wantLabel := FormatLabel(st.Sessions[0], statusfile.Subagents, true)
+	wantRow := "myfeature\t" + wantLabel + "\td1"
+	if rows[0] != wantRow {
+		t.Errorf("rows[0] = %q, want %q (no embedded subagent line)", rows[0], wantRow)
+	}
+}
+
 func TestRenderRows_NoSubagents_NoExtraRow(t *testing.T) {
 	setStatusHome(t)
 
