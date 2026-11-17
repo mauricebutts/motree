@@ -19,7 +19,7 @@ import (
 // lsPreviewHeightPercent is the percentage of mt ls's fzf window height its
 // live preview pane occupies (fzf's --preview-window=down,<N>,wrap) — the
 // rest goes to the row list above it.
-const lsPreviewHeightPercent = 15
+const lsPreviewHeightPercent = 25
 
 // SupportsListen reports whether this machine's fzf can run `mt ls`'s
 // live-reload mechanism: the installed fzf's --help output must mention
@@ -32,8 +32,14 @@ func SupportsListen(runner executil.Runner) bool {
 
 // BuildArgs builds the fzf argv for `mt ls`'s picker:
 //
-//	fzf --delimiter='\t' --with-nth=2 --height=~40% --reverse --track --id-nth=1 --read0 --print0 $listen_flag \
+//	fzf --delimiter='\t' --with-nth=2 --height=100% --reverse --track --id-nth=1 --read0 --print0 $listen_flag \
 //	  --preview="'<mt binary>' __mt_preview {1}" --preview-window=down,<lsPreviewHeightPercent>,wrap,follow
+//
+// --height=100% (matching `mt cmd`'s own picker) rather than a smaller
+// fraction: lsPreviewHeightPercent is itself a percentage OF this height,
+// so capping the overall UI short also caps how much room the preview
+// pane can ever get, leaving dead terminal space below the whole picker
+// instead of giving that room to either the row list or the preview.
 //
 // --read0/--print0 are needed for multi-line rows — see Run. follow keeps
 // the preview scrolled to its bottom (tail -f style) rather than its top,
@@ -50,7 +56,7 @@ func BuildArgs(mtBinaryPath string, listen bool, socketPath string) []string {
 	args := []string{
 		`--delimiter=\t`,
 		"--with-nth=2",
-		"--height=~40%",
+		"--height=100%",
 		"--reverse",
 		"--track",
 		"--id-nth=1",

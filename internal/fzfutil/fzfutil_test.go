@@ -51,8 +51,8 @@ func TestBuildArgs_WithoutListen_OmitsListenFlag(t *testing.T) {
 	if !contains(args, wantPreview) {
 		t.Errorf("args = %+v, want to contain %q", args, wantPreview)
 	}
-	if !contains(args, "--preview-window=down,15,wrap,follow") {
-		t.Errorf("args = %+v, want to contain --preview-window=down,15,wrap,follow", args)
+	if !contains(args, "--preview-window=down,25,wrap,follow") {
+		t.Errorf("args = %+v, want to contain --preview-window=down,25,wrap,follow", args)
 	}
 	if !contains(args, "--read0") || !contains(args, "--print0") {
 		t.Errorf("args = %+v, want --read0 and --print0 (multi-line subagent rows need NUL framing)", args)
