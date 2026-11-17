@@ -139,6 +139,132 @@ func TestSessionStatus_NoStatusFileAnywhere_NotFound(t *testing.T) {
 	}
 }
 
+func TestSessionStatus_AgentToolInflight_ShowsSubagentsEvenOverRunning(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	repos := []state.Repo{{RepoPath: "/repo/running", WorktreePath: worktree}}
+
+	if err := statusfile.Write(worktree, statusfile.Running); err != nil {
+		t.Fatalf("Write running: %v", err)
+	}
+	if err := statusfile.MarkSubagentInflight(worktree, "", "toolu_1"); err != nil {
+		t.Fatalf("MarkSubagentInflight: %v", err)
+	}
+
+	status, found := SessionStatus(repos)
+	if !found || status != statusfile.Subagents {
+		t.Errorf("SessionStatus = (%q, %v), want (%q, true) — an in-flight Agent-tool call must win over plain Running", status, found, statusfile.Subagents)
+	}
+}
+
+func TestSubagentLine_JoinsOneEmojiPerLiveSubagent(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	repos := []state.Repo{{RepoPath: "/repo/foo", WorktreePath: worktree}}
+
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-2", statusfile.Waiting); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	line, found := SubagentLine(repos)
+	if !found {
+		t.Fatalf("SubagentLine found = false, want true")
+	}
+
+	wantEmoji := map[rune]bool{'🏃': false, '🔔': false}
+	for _, r := range line {
+		if _, ok := wantEmoji[r]; ok {
+			wantEmoji[r] = true
+		}
+	}
+	for emoji, seen := range wantEmoji {
+		if !seen {
+			t.Errorf("SubagentLine = %q, want it to contain %q", line, string(emoji))
+		}
+	}
+	if line[:len(subagentIndent)] != subagentIndent {
+		t.Errorf("SubagentLine = %q, want it to start with the indent %q", line, subagentIndent)
+	}
+}
+
+func TestSubagentLine_NestedSubagentSpawningItsOwn_ShowsSubagentsEmoji(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	repos := []state.Repo{{RepoPath: "/repo/foo", WorktreePath: worktree}}
+
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+	if err := statusfile.MarkSubagentInflight(worktree, "agent-1", "toolu_nested"); err != nil {
+		t.Fatalf("MarkSubagentInflight: %v", err)
+	}
+
+	line, found := SubagentLine(repos)
+	if !found {
+		t.Fatalf("SubagentLine found = false, want true")
+	}
+	want := subagentIndent + statusEmoji[statusfile.Subagents]
+	if line != want {
+		t.Errorf("SubagentLine = %q, want %q — agent-1 is itself spinning out a nested subagent", line, want)
+	}
+}
+
+func TestSubagentLine_NoLiveSubagents_NotFound(t *testing.T) {
+	setStatusHome(t)
+
+	repos := []state.Repo{{RepoPath: "/repo/foo", WorktreePath: t.TempDir()}}
+
+	line, found := SubagentLine(repos)
+	if found || line != "" {
+		t.Errorf("SubagentLine = (%q, %v), want (\"\", false)", line, found)
+	}
+}
+
+func TestRenderRows_IncludesSubagentLineImmediatelyAfterParentRow(t *testing.T) {
+	setStatusHome(t)
+
+	worktree := t.TempDir()
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "myfeature", Description: "d1", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/r/foo", WorktreePath: worktree}}},
+		},
+	}
+	if err := statusfile.WriteSubagent(worktree, "agent-1", statusfile.Running); err != nil {
+		t.Fatalf("WriteSubagent: %v", err)
+	}
+
+	rows := RenderRows(st)
+	if len(rows) != 2 {
+		t.Fatalf("RenderRows returned %d rows, want 2 (parent + subagent line): %v", len(rows), rows)
+	}
+
+	wantSubRow := "myfeature\t" + subagentIndent + statusEmoji[statusfile.Running] + "\t" + "d1"
+	if rows[1] != wantSubRow {
+		t.Errorf("rows[1] = %q, want %q", rows[1], wantSubRow)
+	}
+}
+
+func TestRenderRows_NoSubagents_NoExtraRow(t *testing.T) {
+	setStatusHome(t)
+
+	st := &state.State{
+		Sessions: []state.Session{
+			{Name: "myfeature", Description: "d1", LastOpened: 100, Repos: []state.Repo{{RepoPath: "/r/foo", WorktreePath: t.TempDir()}}},
+		},
+	}
+
+	rows := RenderRows(st)
+	if len(rows) != 1 {
+		t.Fatalf("RenderRows returned %d rows, want 1 (no subagents tracked): %v", len(rows), rows)
+	}
+}
+
 func TestFormatLabel_MatchesEmojiDateReposDescriptionFormat(t *testing.T) {
 	sess := state.Session{
 		Name:        "myfeature",

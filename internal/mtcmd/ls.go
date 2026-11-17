@@ -67,6 +67,13 @@ func SessionStatus(repos []state.Repo) (status statusfile.Status, found bool) {
 		if err != nil || !ok {
 			continue
 		}
+		// A top-level session currently blocked on its own Agent-tool call
+		// (agent_id "") is, by definition, managing a subagent right now —
+		// that takes priority over whatever status its last plain hook
+		// event wrote.
+		if inflight, _ := statusfile.HasSubagentInflight(repo.WorktreePath, ""); inflight {
+			s = statusfile.Subagents
+		}
 		switch s {
 		case statusfile.Waiting:
 			anyWaiting = true
@@ -91,6 +98,32 @@ func SessionStatus(repos []state.Repo) (status statusfile.Status, found bool) {
 	default:
 		return "", false
 	}
+}
+
+// subagentIndent prefixes the single line of subagent emoji RenderRows (and
+// Ls's no-fzf fallback) render directly beneath a session's own row.
+const subagentIndent = "    "
+
+// SubagentLine renders the single tabbed-in line listing one emoji per live
+// subagent tracked under any of repos' worktree paths, in no particular
+// cross-repo order. found is false when there are no live subagents at
+// all, so callers can skip the line entirely rather than render a bare
+// indent.
+func SubagentLine(repos []state.Repo) (line string, found bool) {
+	var emojis []string
+	for _, repo := range repos {
+		subs, err := statusfile.ListSubagents(repo.WorktreePath)
+		if err != nil {
+			continue
+		}
+		for _, sub := range subs {
+			emojis = append(emojis, statusEmoji[sub.Status])
+		}
+	}
+	if len(emojis) == 0 {
+		return "", false
+	}
+	return subagentIndent + strings.Join(emojis, " "), true
 }
 
 // FormatLabel renders the exact row label the original bash mt_label_for
@@ -143,6 +176,10 @@ func RenderRows(st *state.State) []string {
 		}
 
 		rows = append(rows, sess.Name+"\t"+label+"\t"+desc)
+
+		if line, ok := SubagentLine(sess.Repos); ok {
+			rows = append(rows, sess.Name+"\t"+line+"\t"+desc)
+		}
 	}
 
 	return rows
@@ -211,6 +248,9 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 		for _, sess := range d.State.SortedSessions() {
 			status, found := SessionStatus(sess.Repos)
 			fmt.Println(FormatLabel(sess, status, found))
+			if line, ok := SubagentLine(sess.Repos); ok {
+				fmt.Println(line)
+			}
 			for _, repo := range sess.Repos {
 				fmt.Println("  " + repo.RepoPath)
 			}
