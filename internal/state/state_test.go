@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -317,5 +318,113 @@ func TestIsTracked_FalseForUnknownSession(t *testing.T) {
 
 	if s.IsTracked("nonexistent") {
 		t.Errorf("IsTracked(%q) = true, want false", "nonexistent")
+	}
+}
+
+func TestEnsureRepoPR_RecordsPRNumberOnTheRepoRow(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("review-care-spike", "PR #420", 1)
+
+	s.EnsureRepoPR("review-care-spike", "/repo1", "/wt1", "420")
+
+	want := []Repo{{RepoPath: "/repo1", WorktreePath: "/wt1", PRNumber: "420"}}
+	if got := s.ReposFor("review-care-spike"); !reflect.DeepEqual(got, want) {
+		t.Errorf("ReposFor = %+v, want %+v", got, want)
+	}
+}
+
+func TestSessionForPR_FindsSessionHoldingThatRepoAndPR(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("other", "d", 1)
+	s.EnsureRepoPR("other", "/repo1", "/wt-other", "77")
+	s.UpsertSession("review-care-spike", "PR #420", 1)
+	s.EnsureRepoPR("review-care-spike", "/repo1", "/wt1", "420")
+
+	if got := s.SessionForPR("/repo1", "420"); got != "review-care-spike" {
+		t.Errorf("SessionForPR = %q, want %q", got, "review-care-spike")
+	}
+}
+
+func TestSessionForPR_SamePRNumberInAnotherRepoDoesNotMatch(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("a", "d", 1)
+	s.EnsureRepoPR("a", "/repo1", "/wt1", "420")
+
+	// ~/.motree is global across repos, so PR 420 in /repo2 is a different
+	// thing entirely and must not collide with PR 420 in /repo1.
+	if got := s.SessionForPR("/repo2", "420"); got != "" {
+		t.Errorf("SessionForPR = %q, want empty string", got)
+	}
+}
+
+func TestSessionForPR_IgnoresRowsWithNoPRNumber(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("legacy", "d", 1)
+	s.EnsureRepo("legacy", "/repo1", "/wt1") // how older builds wrote every row
+
+	if got := s.SessionForPR("/repo1", "420"); got != "" {
+		t.Errorf("SessionForPR = %q, want empty string", got)
+	}
+}
+
+func TestSessionForPR_EmptyPRNumberNeverMatches(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("legacy", "d", 1)
+	s.EnsureRepo("legacy", "/repo1", "/wt1")
+
+	// Without this guard every PR-less row would match an empty lookup.
+	if got := s.SessionForPR("/repo1", ""); got != "" {
+		t.Errorf("SessionForPR = %q, want empty string", got)
+	}
+}
+
+func TestSaveLoad_RoundTripPreservesPRNumber(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	original := &State{
+		Sessions: []Session{{
+			Name:        "review-care-spike",
+			Description: "PR #420",
+			LastOpened:  1234567890,
+			Repos:       []Repo{{RepoPath: "/repo1", WorktreePath: "/wt1", PRNumber: "420"}},
+		}},
+	}
+
+	if err := original.Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := loaded.Sessions[0].Repos[0].PRNumber; got != "420" {
+		t.Errorf("loaded PRNumber = %q, want %q", got, "420")
+	}
+}
+
+func TestEnsureRepoPR_UpdatesPRNumberOnAnExistingRow(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("pr-420", "PR #420", 1)
+	s.EnsureRepo("pr-420", "/repo1", "/wt1") // how older builds wrote it: no PR number
+
+	s.EnsureRepoPR("pr-420", "/repo1", "/wt1", "420")
+
+	// Without the update the row stays PR-less forever, so the duplicate
+	// guard never protects a session created before pr_number existed.
+	want := []Repo{{RepoPath: "/repo1", WorktreePath: "/wt1", PRNumber: "420"}}
+	if got := s.ReposFor("pr-420"); !reflect.DeepEqual(got, want) {
+		t.Errorf("ReposFor = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnsureRepoPR_DoesNotChangeTheWorktreePathOfAnExistingRow(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("pr-420", "PR #420", 1)
+	s.EnsureRepo("pr-420", "/repo1", "/wt1")
+
+	s.EnsureRepoPR("pr-420", "/repo1", "/wt1-different", "420")
+
+	if got := s.ReposFor("pr-420")[0].WorktreePath; got != "/wt1" {
+		t.Errorf("WorktreePath = %q, want %q (EnsureRepo's no-clobber rule still holds)", got, "/wt1")
 	}
 }

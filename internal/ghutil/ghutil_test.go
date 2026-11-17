@@ -32,20 +32,45 @@ func TestPRHeadRef_ParsesJQOutput(t *testing.T) {
 	}
 }
 
-func TestPRHeadRef_EmptyOnFailure(t *testing.T) {
+func TestPRHeadRef_FailureReturnsErrorCarryingGhStderr(t *testing.T) {
 	runner := &executil.FakeRunner{
 		Queue: []executil.Response{
-			{Err: errors.New("gh: not found")},
+			{
+				Stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)\n",
+				Err:    errors.New("exit status 1"),
+			},
 		},
 	}
 	g := GH{Runner: runner}
 
 	ref, err := g.PRHeadRef("/repo/root", "999")
-	if err != nil {
-		t.Fatalf("PRHeadRef returned error: %v, want nil (failures surface as empty string, not an error)", err)
+	if err == nil {
+		t.Fatalf("PRHeadRef returned nil error, want gh's failure surfaced")
 	}
 	if ref != "" {
-		t.Errorf("PRHeadRef = %q, want empty string", ref)
+		t.Errorf("PRHeadRef = %q, want empty string alongside the error", ref)
+	}
+	want := "gh pr view 999 failed: GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)"
+	if err.Error() != want {
+		t.Errorf("PRHeadRef error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestPRHeadRef_FailureWithoutStderrFallsBackToUnderlyingError(t *testing.T) {
+	runner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("exec: \"gh\": executable file not found in $PATH")},
+		},
+	}
+	g := GH{Runner: runner}
+
+	_, err := g.PRHeadRef("/repo/root", "7")
+	if err == nil {
+		t.Fatalf("PRHeadRef returned nil error, want the underlying failure surfaced")
+	}
+	want := `gh pr view 7 failed: exec: "gh": executable file not found in $PATH`
+	if err.Error() != want {
+		t.Errorf("PRHeadRef error = %q, want %q", err.Error(), want)
 	}
 }
 

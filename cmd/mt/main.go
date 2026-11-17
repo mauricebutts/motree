@@ -112,14 +112,12 @@ func main() {
 	}
 }
 
-// reportAndExit prints err and exits 1, skipping the print for the two
-// sentinels that mean "the callee already printed this itself":
-// errUsageShown (it wrote usage() to stderr) and mtcmd.ErrNoPRFound
-// (`mt pr` echoed its own "no pr found" line to stdout). Shared by the
-// create/spawn/pr dispatch branches above, the only ones that produce
-// them.
+// reportAndExit prints err and exits 1, skipping the print for
+// errUsageShown — the one sentinel meaning "the callee already printed
+// this itself" (it wrote usage() to stderr). Shared by the
+// create/spawn/pr dispatch branches above, the only ones that produce it.
 func reportAndExit(err error) {
-	if err != errUsageShown && !errors.Is(err, mtcmd.ErrNoPRFound) {
+	if err != errUsageShown {
 		fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 	}
 	os.Exit(1)
@@ -127,7 +125,7 @@ func reportAndExit(err error) {
 
 // usage prints the one-line usage summary.
 func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> | mt ls | mt rm [--self] | mt cmd`)
+	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> [<title>] | mt ls | mt rm [--self] | mt cmd`)
 }
 
 // printHelp prints mt's static help text for every subcommand.
@@ -140,11 +138,19 @@ mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>]
     Like the above, but runs <prompt> in the claude pane immediately and
     does not attach — for firing off several sessions in a row.
 
-mt pr <pr_number>
-    Look up <pr_number> with gh. If it doesn't exist, print "no pr found".
-    Otherwise create/attach a session named pr-<pr_number>, with a worktree
-    checked out to that PR's branch, and have the claude pane open already
-    explaining the PR.
+mt pr <pr_number> [<title>]
+    Look up <pr_number> with gh. If gh can't resolve it, report gh's own
+    error — which distinguishes a PR that doesn't exist from a repo gh
+    can't see (wrong account, SSO not authorized). Otherwise create/attach
+    a session named pr-<pr_number>, with a worktree checked out to that
+    PR's branch, and have the claude pane open already explaining the PR.
+
+    <title> names the session (and its worktree) instead of pr-<pr_number>;
+    the description stays "PR #<pr_number>" so mt ls still shows which PR
+    it is. It must be a plain name — not a path, and not all digits, which
+    would read as a second PR number. mt refuses, rather than creating
+    anything, if <title> already names some other session, or if another
+    session in this repo already holds <pr_number>.
 
 mt ls
     List tracked sessions and attach to the one you pick.
@@ -429,11 +435,20 @@ func runSpawn(args []string) error {
 // runPR implements `mt pr <pr_number>` — no flags, just the positional PR
 // number. args is os.Args[2:] (everything after "pr").
 func runPR(args []string) error {
-	if len(args) == 0 {
+	if len(args) == 0 || len(args) > 2 {
 		usage()
 		return errUsageShown
 	}
 	prNumber := args[0]
+
+	title := ""
+	if len(args) == 2 {
+		if !validSessionTitle(args[1]) {
+			usage()
+			return errUsageShown
+		}
+		title = args[1]
+	}
 
 	d, err := newDeps()
 	if err != nil {
@@ -450,7 +465,44 @@ func runPR(args []string) error {
 	gh := ghutil.GH{Runner: executil.RealRunner{}}
 
 	// Same as runCreate: PR saves before it attaches, so nothing to do here.
-	return mtcmd.PR(d, gh, prNumber, cwd, insideTmux, now)
+	return mtcmd.PR(d, gh, prNumber, title, cwd, insideTmux, now)
+}
+
+// validSessionTitle reports whether s is usable as `mt pr`'s session title.
+//
+// The title becomes a path component under .claude/worktrees, a tmux
+// session name and a state key all at once, so it has to be a plain name.
+// filepath.Join cleans "..", which means an unchecked "../../escape" would
+// put the worktree outside .claude/worktrees entirely and "." would make
+// it that directory itself — so path-ish titles are rejected here rather
+// than sanitized into something the user did not ask for. An all-digits
+// title is rejected too: `mt pr 420 421` reads as a second PR number, and
+// silently naming the session "421" is a typo the user cannot see.
+func validSessionTitle(s string) bool {
+	switch {
+	case s == "" || isAllDigits(s):
+		return false
+	case strings.HasPrefix(s, "-"): // would parse as a flag elsewhere
+		return false
+	case strings.ContainsAny(s, `/\`) || strings.Contains(s, ".."):
+		return false
+	case s == ".":
+		return false
+	}
+	return true
+}
+
+// isAllDigits reports whether s is non-empty and every byte is 0-9.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by

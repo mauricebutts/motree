@@ -13,6 +13,11 @@ import (
 type Repo struct {
 	RepoPath     string `json:"repo_path"`
 	WorktreePath string `json:"worktree_path"`
+	// PRNumber is set only for a worktree `mt pr` checked out, and is what
+	// ties a session to one PR in one repo. It's omitempty so a ~/.motree
+	// written by an older build still loads: those rows simply carry no PR
+	// number, and SessionForPR never matches them.
+	PRNumber string `json:"pr_number,omitempty"`
 }
 
 type Session struct {
@@ -113,6 +118,55 @@ func (s *State) EnsureRepo(sessionName, repoPath, worktreePath string) {
 			return
 		}
 	}
+}
+
+// EnsureRepoPR is EnsureRepo with the repo row also recording which PR it
+// was checked out for. Separate from EnsureRepo rather than an extra
+// parameter on it so Create and Spawn — which have no PR — stay untouched.
+//
+// Unlike EnsureRepo it is not a pure no-op on an existing row: it still
+// leaves WorktreePath alone, but it does set PRNumber. That update is what
+// heals a row written before PRNumber existed — otherwise a session
+// created by an older `mt pr` would stay untied to its PR forever, and the
+// duplicate guard would never see it.
+func (s *State) EnsureRepoPR(sessionName, repoPath, worktreePath, prNumber string) {
+	for i, sess := range s.Sessions {
+		if sess.Name == sessionName {
+			for j, repo := range sess.Repos {
+				if repo.RepoPath == repoPath {
+					s.Sessions[i].Repos[j].PRNumber = prNumber
+					return
+				}
+			}
+			s.Sessions[i].Repos = append(s.Sessions[i].Repos, Repo{
+				RepoPath:     repoPath,
+				WorktreePath: worktreePath,
+				PRNumber:     prNumber,
+			})
+			return
+		}
+	}
+}
+
+// SessionForPR returns the name of the session holding a repo checked out
+// for prNumber in repoPath, or "" if there is none.
+//
+// The key is (repoPath, prNumber), not prNumber alone: ~/.motree is global
+// across every repo, so PR 420 in two different repos are two different
+// things. An empty prNumber never matches, which keeps rows written before
+// PRNumber existed — they have none — from matching every lookup.
+func (s *State) SessionForPR(repoPath, prNumber string) string {
+	if prNumber == "" {
+		return ""
+	}
+	for _, sess := range s.Sessions {
+		for _, repo := range sess.Repos {
+			if repo.RepoPath == repoPath && repo.PRNumber == prNumber {
+				return sess.Name
+			}
+		}
+	}
+	return ""
 }
 
 // ReposFor returns a copy of sessionName's repos, never the session's own

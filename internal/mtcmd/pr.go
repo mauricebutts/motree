@@ -19,19 +19,40 @@ var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 // — a deliberately preserved typo, not a mistake to "fix".
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
-// ErrNoPRFound is the sentinel PR returns after it has already printed
-// "no pr found" to stdout itself. It exists for the same reason
-// cmd/mt/main.go's own errUsageShown does: main's dispatch prints every
-// other returned error via "mt: %v", which would put a second line on the
-// screen for this one event. main checks for this sentinel and exits 1
-// silently instead.
-var ErrNoPRFound = errors.New("no pr found")
+// prHolder returns the name of the session already holding prNumber in
+// repoRoot, or "".
+//
+// It falls back to the "pr-<prNumber>" name when state has no PRNumber
+// match. Sessions created before PRNumber existed carry no tie, so
+// State.SessionForPR cannot see them — but mt generated those names
+// itself, so a tracked "pr-<n>" with a row for this repo is that PR's
+// session. Without the fallback the duplicate guard would protect nobody
+// upgrading from an older build until they re-ran the bare form once.
+func prHolder(d *Deps, repoRoot, prNumber string) string {
+	if existing := d.State.SessionForPR(repoRoot, prNumber); existing != "" {
+		return existing
+	}
+	legacy := "pr-" + prNumber
+	for _, repo := range d.State.ReposFor(legacy) {
+		if repo.RepoPath == repoRoot {
+			return legacy
+		}
+	}
+	return ""
+}
 
-// PR checks prNumber out into its own "pr-<prNumber>" session/worktree for
-// review. It requires a numeric prNumber and the gh CLI; if the worktree
-// doesn't exist yet, it resolves the PR's head branch via gh.PRHeadRef —
-// printing "no pr found" and returning an error, with no worktree,
-// session, or state row created, if that comes back empty — then prunes,
+// PR checks prNumber out into its own session/worktree for review, named
+// title when one is given and "pr-<prNumber>" otherwise. The title
+// replaces the session name, the worktree directory and the state key
+// together; the description stays "PR #<prNumber>" either way, so mt ls
+// still shows which PR a renamed session is for.
+//
+// It requires a numeric prNumber and the gh CLI; if the worktree
+// doesn't exist yet, it refuses when some other session already holds
+// this PR in this repo (see the guard below), then resolves the PR's head
+// branch via gh.PRHeadRef — returning that lookup's error verbatim, with
+// no worktree, session, or state row created, if it fails or yields no
+// branch — then prunes,
 // creates a detached worktree (no base-branch fetch: gh pr checkout
 // fetches the PR's own branch), and runs gh.Checkout inside it so gh
 // manages the local branch/tracking itself.
@@ -40,7 +61,7 @@ var ErrNoPRFound = errors.New("no pr found")
 // except the claude pane (only when the window is newly created) always
 // gets the fixed prExplainPrompt rather than claudecmd.ResumeCommand, and —
 // unlike Spawn — PR always attaches at the end.
-func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64) error {
+func PR(d *Deps, gh ghutil.GH, prNumber, title, cwd string, insideTmux bool, now int64) error {
 	if !prNumberPattern.MatchString(prNumber) {
 		return errors.New("mt: pr requires a numeric PR number")
 	}
@@ -58,17 +79,47 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 	}
 
 	repoName := filepath.Base(repoRoot)
-	name := "pr-" + prNumber
+	name := title
+	if name == "" {
+		name = "pr-" + prNumber
+	}
 	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
 
+	holder := prHolder(d, repoRoot, prNumber)
+
+	// A title is free text, so it can name a session the user made with
+	// `mt <name>`. That session's worktree already exists, so without this
+	// check PR would skip its whole creation block, relabel the session
+	// "PR #<n>", record no PR tie, and attach — leaving the user looking
+	// at their own branch while mt ls and the claude pane both call it a
+	// PR review. Only titles are checked: the bare form's "pr-<n>" is mt's
+	// own namespace, and colliding with it means the same PR.
+	if title != "" && d.State.IsTracked(title) && holder != title {
+		return fmt.Errorf("session '%s' already exists and isn't PR %s", title, prNumber)
+	}
+
 	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
+		// Another session already holding this PR means a second worktree
+		// for the same branch, which git refuses halfway through with
+		// "already checked out at ..." from inside gh pr checkout. Refuse
+		// up front instead, naming the session that has it. Sitting behind
+		// the os.Stat above keeps re-running the same invocation
+		// idempotent; the name comparison covers the case where state
+		// still holds the tie but the worktree was removed by hand.
+		if holder != "" && holder != name {
+			return fmt.Errorf("PR %s is already checked out as session '%s'", prNumber, holder)
+		}
+
+		// gh's own stderr is the only thing that tells a missing PR
+		// apart from a repo gh can't see (wrong account, SSO not
+		// authorized) — both exit 1 — so it goes straight back to the
+		// caller rather than being flattened into one mt-authored line.
 		headRef, err := gh.PRHeadRef(repoRoot, prNumber)
 		if err != nil {
 			return err
 		}
 		if headRef == "" {
-			fmt.Println("no pr found")
-			return ErrNoPRFound
+			return fmt.Errorf("gh reported no head branch for PR %s", prNumber)
 		}
 
 		if err := d.Git.WorktreePrune(repoRoot); err != nil {
@@ -83,7 +134,7 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 	}
 
 	d.State.UpsertSession(name, "PR #"+prNumber, now)
-	d.State.EnsureRepo(name, repoRoot, worktreePath)
+	d.State.EnsureRepoPR(name, repoRoot, worktreePath, prNumber)
 
 	sessionID, windowTarget, isNewWindow, err := ensureSessionWindow(d, name, repoName, worktreePath, nil)
 	if err != nil {

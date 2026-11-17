@@ -189,20 +189,21 @@ esac
 const fzfStub = `head -n 1
 `
 
-// ghStubNoPR fakes `gh pr view ... --jq .headRefName` returning nothing,
-// which is how gh reports a PR number that doesn't exist — the case
-// mtcmd.PR answers with its own "no pr found" line.
-const ghStubNoPR = `exit 0
+// ghStubFailingLookup fakes `gh pr view ... --jq .headRefName` failing
+// the way gh really does when it can't resolve the repo — the case that
+// used to be misreported as a missing PR.
+const ghStubFailingLookup = `echo "GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)" >&2
+exit 1
 `
 
-// TestMain_PR_NoPrFound_PrintsExactlyOneLine covers the sentinel-error
-// plumbing: mtcmd.PR prints "no pr found" itself and returns
-// mtcmd.ErrNoPRFound, and main's reportAndExit must recognise that
-// sentinel and NOT also print its own "mt: no pr found" — one event, one
-// line of output, exit 1.
-func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
+// TestMain_PR_GhLookupFails_PrintsGhErrorOnStderr covers the full
+// plumbing end to end: gh's stderr must survive ghutil -> mtcmd.PR ->
+// main's "mt: %v" print and land on stderr intact, with stdout untouched
+// and exit 1. Previously every gh failure was flattened into a bare "no
+// pr found" on stdout, which told the user a reachable PR didn't exist.
+func TestMain_PR_GhLookupFails_PrintsGhErrorOnStderr(t *testing.T) {
 	stubDir := t.TempDir()
-	writeStub(t, stubDir, "gh", ghStubNoPR)
+	writeStub(t, stubDir, "gh", ghStubFailingLookup)
 	writeStub(t, stubDir, "tmux", tmuxStub)
 
 	repoDir := t.TempDir()
@@ -219,11 +220,12 @@ func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
 	if res.exitCode != 1 {
 		t.Errorf("exit code = %d, want 1", res.exitCode)
 	}
-	if res.stdout != "no pr found\n" {
-		t.Errorf("stdout = %q, want exactly %q", res.stdout, "no pr found\n")
+	if res.stdout != "" {
+		t.Errorf("stdout = %q, want nothing — the failure belongs on stderr", res.stdout)
 	}
-	if strings.Contains(res.stderr, "no pr found") {
-		t.Errorf("stderr = %q, want no second copy of the message — mtcmd.ErrNoPRFound must suppress main's own print", res.stderr)
+	want := "mt: gh pr view 4242 failed: GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)\n"
+	if res.stderr != want {
+		t.Errorf("stderr = %q, want exactly %q", res.stderr, want)
 	}
 }
 
@@ -380,5 +382,148 @@ func TestMtRows_NULTerminatesEachRecord(t *testing.T) {
 	}
 	if !strings.HasPrefix(records[1], "beta\t") {
 		t.Errorf("records[1] = %q, want it to start with \"beta\\t\" and remain its own, separate record", records[1])
+	}
+}
+
+// ghStubCheckout fakes a reachable PR end to end: `gh pr view ... --jq
+// .headRefName` prints a branch, `gh pr checkout` succeeds.
+const ghStubCheckout = `case "$2" in
+  view) echo "feature-branch" ;;
+  *) exit 0 ;;
+esac
+`
+
+// prRepoWithCommit makes a real repo with one commit, which `git worktree
+// add --detach` needs — an empty repo has no HEAD to detach from.
+func prRepoWithCommit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=T",
+		"commit", "-q", "--allow-empty", "-m", "init")
+	return dir
+}
+
+func TestMain_PR_TitleArgNamesTheSession(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + stateFile,
+	}
+
+	res := runMt(t, repoDir, env, "pr", "420", "review-care-spike")
+
+	if res.exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", res.exitCode, res.stderr)
+	}
+
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("reading state file: %v", err)
+	}
+	var s state.State
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatalf("unmarshalling state: %v", err)
+	}
+	if len(s.Sessions) != 1 {
+		t.Fatalf("Sessions = %+v, want exactly 1", s.Sessions)
+	}
+	if s.Sessions[0].Name != "review-care-spike" {
+		t.Errorf("Sessions[0].Name = %q, want %q", s.Sessions[0].Name, "review-care-spike")
+	}
+	if s.Sessions[0].Description != "PR #420" {
+		t.Errorf("Sessions[0].Description = %q, want %q", s.Sessions[0].Description, "PR #420")
+	}
+}
+
+func TestMain_PR_DigitsOnlyTitle_IsUsageError(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + stateFile,
+	}
+
+	// Without this, `mt pr 420 421` would silently name the session "421".
+	res := runMt(t, repoDir, env, "pr", "420", "421")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	if !strings.Contains(res.stderr, "Usage: mt") {
+		t.Errorf("stderr = %q, want the usage line", res.stderr)
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Errorf("state file %q exists, want no session created", stateFile)
+	}
+}
+
+func TestMain_PR_TooManyArgs_IsUsageError(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + filepath.Join(t.TempDir(), "state.json"),
+	}
+
+	res := runMt(t, repoDir, env, "pr", "420", "a", "b")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	if !strings.Contains(res.stderr, "Usage: mt") {
+		t.Errorf("stderr = %q, want the usage line", res.stderr)
+	}
+}
+
+// The title becomes a path component under .claude/worktrees, and
+// filepath.Join cleans "..", so an unvalidated title escapes that
+// directory entirely — or, as ".", names the directory itself.
+func TestMain_PR_TitleThatEscapesTheWorktreeDir_IsUsageError(t *testing.T) {
+	for _, title := range []string{"../../escape", ".", "..", "foo/bar", "-b", "a\\b"} {
+		t.Run(title, func(t *testing.T) {
+			stubDir := t.TempDir()
+			writeStub(t, stubDir, "gh", ghStubCheckout)
+			writeStub(t, stubDir, "tmux", tmuxStub)
+
+			repoDir := prRepoWithCommit(t)
+			stateFile := filepath.Join(t.TempDir(), "state.json")
+			env := []string{
+				"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+				"HOME=" + t.TempDir(),
+				"MOTREE_STATE_FILE=" + stateFile,
+			}
+
+			res := runMt(t, repoDir, env, "pr", "420", title)
+
+			if res.exitCode != 1 {
+				t.Errorf("exit code = %d, want 1 (stdout: %s)", res.exitCode, res.stdout)
+			}
+			if !strings.Contains(res.stderr, "Usage: mt") {
+				t.Errorf("stderr = %q, want the usage line", res.stderr)
+			}
+			if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+				t.Errorf("state file exists, want no session created")
+			}
+			if entries, _ := os.ReadDir(repoDir); len(entries) != 1 {
+				// .git only — nothing new at the repo root
+				t.Errorf("repo root entries = %d, want 1 (.git only); a worktree escaped", len(entries))
+			}
+		})
 	}
 }
