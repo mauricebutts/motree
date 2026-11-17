@@ -65,7 +65,31 @@ func main() {
 			os.Exit(1)
 		}
 	case "rm":
-		if err := runRm(); err != nil {
+		if err := runRm(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
+	case "cmd":
+		if err := runCmd(); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
+	case "__mt_cmd_dock":
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "usage: mt __mt_cmd_dock <name>\n")
+			os.Exit(1)
+		}
+		if err := runCmdDock(os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
+	case "__mt_cmd_list":
+		if err := runCmdList(); err != nil {
+			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
+			os.Exit(1)
+		}
+	case "__mt_cmd_quit":
+		if err := runCmdQuit(); err != nil {
 			fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 			os.Exit(1)
 		}
@@ -105,17 +129,14 @@ func reportAndExit(err error) {
 }
 
 // usage prints the one-line usage summary, matching the original bash
-// tool's usage() (ported to the "mt" binary name; the Go port never
-// implemented "rm --self", so that original's trailing "[--self]" is
-// dropped here).
+// tool's usage() (ported to the "mt" binary name).
 func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> | mt ls | mt rm`)
+	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> | mt ls | mt rm [--self] | mt cmd`)
 }
 
 // printHelp prints mt's static help text, matching the original bash
-// tool's do_help verbatim for every subcommand it still has (dropping its
-// unimplemented "rm --self" section), plus a section for install-hooks,
-// which only exists in this Go port.
+// tool's do_help verbatim for every subcommand it has, plus a section for
+// install-hooks, which only exists in this Go port.
 func printHelp() {
 	fmt.Print(`mt <name> [-b <base-branch>] [-d <description>]
     Create or expand a named session: a git worktree paired with a tmux
@@ -137,6 +158,17 @@ mt ls
 mt rm
     List tracked sessions and remove the one you pick (worktree, branch,
     tmux session, and tracked state).
+
+mt rm --self
+    Remove the session you're currently attached to, after confirming.
+
+mt cmd
+    Open the command center: a live picker of tracked sessions on the
+    left, and whichever one you pick's claude pane, live and interactive,
+    on the right. Pick a different session to switch the right pane.
+    Esc closes the picker but leaves the command center running (re-open
+    with 'mt cmd'); Ctrl-C un-zooms whatever's docked and closes it for
+    good.
 
 mt install-hooks
     One-time setup: register mt's Claude Code status hook in
@@ -217,15 +249,22 @@ func runLs() error {
 	return mtcmd.Ls(d, mtBinaryPath, cwd, insideTmux)
 }
 
-// runRm runs the `mt rm` fzf session picker, removing whichever session
-// gets picked (its worktrees, branches, state, and tmux session).
+// runRm runs `mt rm`: with "--self", removes the session the caller is
+// currently attached to (after a y/N confirmation); otherwise runs the
+// fzf session picker, removing whichever session gets picked (its
+// worktrees, branches, state, and tmux session). args is os.Args[2:]
+// (everything after "rm").
 //
 // As with runLs, no Save here: RemoveSession writes the pruned state out
 // itself, before the kill-session that can SIGHUP this very process.
-func runRm() error {
+func runRm(args []string) error {
 	d, err := newDeps()
 	if err != nil {
 		return err
+	}
+
+	if len(args) > 0 && args[0] == "--self" {
+		return mtcmd.RmSelf(d, os.Stdin, os.Stdout)
 	}
 
 	cwd, err := os.Getwd()
@@ -234,6 +273,66 @@ func runRm() error {
 	}
 
 	return mtcmd.Rm(d, cwd)
+}
+
+// runCmd runs `mt cmd`: finds or creates the command center and attaches
+// to it.
+func runCmd() error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	mtBinaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve mt binary path: %w", err)
+	}
+
+	insideTmux := os.Getenv("TMUX") != ""
+
+	return mtcmd.Cmd(d, mtBinaryPath, insideTmux)
+}
+
+// runCmdDock runs `mt __mt_cmd_dock <name>`: makes the command center's
+// right pane mirror name's claude pane.
+func runCmdDock(name string) error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	mtBinaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve mt binary path: %w", err)
+	}
+
+	return mtcmd.Dock(d, mtBinaryPath, name)
+}
+
+// runCmdList runs `mt __mt_cmd_list`: the command center's left-pane fzf
+// picker, whose own bindings drive runCmdDock/runCmdQuit via execute-silent.
+func runCmdList() error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	mtBinaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve mt binary path: %w", err)
+	}
+
+	return mtcmd.List(d, mtBinaryPath)
+}
+
+// runCmdQuit runs `mt __mt_cmd_quit`: tears down the command center.
+func runCmdQuit() error {
+	d, err := newDeps()
+	if err != nil {
+		return err
+	}
+
+	return mtcmd.Quit(d)
 }
 
 // runCreate implements the bare `mt <name> [-b <base-branch>] [-d
