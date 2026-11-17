@@ -1,5 +1,4 @@
 BINARY := mt
-INSTALL_PATH := $(HOME)/Util/mt-go
 
 .PHONY: build test install
 
@@ -9,13 +8,11 @@ build:
 test:
 	go test ./...
 
-# install copies the built binary to ~/Util/mt-go. It deliberately never
-# touches the existing bash tool (~/Util/motree.sh) or the `mt` alias in
-# .zshrc — that cutover (repointing the alias, migrating ~/.motree) is a
-# separate, deliberate later step, not something `make install` does on
-# its own. Point MOTREE_STATE_FILE at this binary to try it out alongside
-# the bash tool without disturbing it (see README.md).
+# install is just build, kept as a separate target for habit/consistency.
+# This Makefile doesn't place mt anywhere outside the repo — the actual
+# way to get it onto PATH is the conventional Go one: `go install
+# ./cmd/mt`, which drops it at `$(go env GOPATH)/bin/mt`, already on PATH
+# for most Go setups. That's a separate, deliberate step you take when
+# you're ready, same as repointing the `mt` alias in .zshrc and migrating
+# ~/.motree — none of that happens automatically from this Makefile.
 install: build
-	mkdir -p $(HOME)/Util
-	cp $(BINARY) $(INSTALL_PATH)
-	@echo "Installed to $(INSTALL_PATH) -- ~/Util/motree.sh and the mt alias are untouched."

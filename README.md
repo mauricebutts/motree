@@ -14,15 +14,26 @@ Requires Go (developed against 1.27), plus `git`, `tmux`, and `fzf` on
 1. **Build it:**
 
    ```
-   make build    # builds ./mt
+   make build    # builds ./mt in the repo
    make test     # go test ./...
-   make install  # builds, then copies ./mt to ~/Util/mt-go
    ```
 
-   `make install` never touches the existing bash tool (`~/Util/motree.sh`)
-   or the `mt` alias in `.zshrc` — switching the real `mt` alias over to
-   this binary is a deliberate, separate step you take once you trust it,
-   not something this build does automatically.
+   To get `mt` onto `PATH`, use the conventional Go way instead of this
+   Makefile:
+
+   ```
+   go install ./cmd/mt
+   ```
+
+   This drops the binary at `$(go env GOPATH)/bin/mt` — already on `PATH`
+   for most Go setups, no further config needed. It never touches the
+   existing bash tool (`~/Util/motree.sh`) or the `mt` alias in `.zshrc` —
+   switching the real `mt` alias over to this binary (or just removing it,
+   since `PATH` would then resolve `mt` here directly) is a deliberate,
+   separate step you take once you trust it, not something `go install`
+   does automatically. Until then, invoke the Go binary explicitly (e.g.
+   `\mt`, which bypasses a same-named shell alias and falls through to
+   `PATH`) to run it alongside the bash tool.
 
 2. **Point it at a state file, in your shell startup file — not ad-hoc per
    terminal:**
