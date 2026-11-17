@@ -125,7 +125,7 @@ func reportAndExit(err error) {
 
 // usage prints the one-line usage summary.
 func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> | mt ls | mt rm [--self] | mt cmd`)
+	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> [<title>] | mt ls | mt rm [--self] | mt cmd`)
 }
 
 // printHelp prints mt's static help text for every subcommand.
@@ -138,12 +138,19 @@ mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>]
     Like the above, but runs <prompt> in the claude pane immediately and
     does not attach — for firing off several sessions in a row.
 
-mt pr <pr_number>
+mt pr <pr_number> [<title>]
     Look up <pr_number> with gh. If gh can't resolve it, report gh's own
     error — which distinguishes a PR that doesn't exist from a repo gh
     can't see (wrong account, SSO not authorized). Otherwise create/attach
     a session named pr-<pr_number>, with a worktree checked out to that
     PR's branch, and have the claude pane open already explaining the PR.
+
+    <title> names the session (and its worktree) instead of pr-<pr_number>;
+    the description stays "PR #<pr_number>" so mt ls still shows which PR
+    it is. A title of only digits is rejected, so a stray second number
+    can't become a session name. If another session in this repo already
+    holds <pr_number>, mt refuses and names that session rather than
+    cutting a second worktree for the same branch.
 
 mt ls
     List tracked sessions and attach to the one you pick.
@@ -428,12 +435,23 @@ func runSpawn(args []string) error {
 // runPR implements `mt pr <pr_number>` — no flags, just the positional PR
 // number. args is os.Args[2:] (everything after "pr").
 func runPR(args []string) error {
-	if len(args) == 0 {
+	if len(args) == 0 || len(args) > 2 {
 		usage()
 		return errUsageShown
 	}
 	prNumber := args[0]
+
+	// An all-digits title would read as a second PR number: `mt pr 420 421`
+	// silently naming the session "421" is a typo the user can't see, so
+	// it's a usage error rather than a valid (if odd) name.
 	title := ""
+	if len(args) == 2 {
+		if args[1] == "" || isAllDigits(args[1]) {
+			usage()
+			return errUsageShown
+		}
+		title = args[1]
+	}
 
 	d, err := newDeps()
 	if err != nil {
@@ -451,6 +469,19 @@ func runPR(args []string) error {
 
 	// Same as runCreate: PR saves before it attaches, so nothing to do here.
 	return mtcmd.PR(d, gh, prNumber, title, cwd, insideTmux, now)
+}
+
+// isAllDigits reports whether s is non-empty and every byte is 0-9.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by

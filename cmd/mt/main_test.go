@@ -384,3 +384,109 @@ func TestMtRows_NULTerminatesEachRecord(t *testing.T) {
 		t.Errorf("records[1] = %q, want it to start with \"beta\\t\" and remain its own, separate record", records[1])
 	}
 }
+
+// ghStubCheckout fakes a reachable PR end to end: `gh pr view ... --jq
+// .headRefName` prints a branch, `gh pr checkout` succeeds.
+const ghStubCheckout = `case "$2" in
+  view) echo "feature-branch" ;;
+  *) exit 0 ;;
+esac
+`
+
+// prRepoWithCommit makes a real repo with one commit, which `git worktree
+// add --detach` needs — an empty repo has no HEAD to detach from.
+func prRepoWithCommit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=T",
+		"commit", "-q", "--allow-empty", "-m", "init")
+	return dir
+}
+
+func TestMain_PR_TitleArgNamesTheSession(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + stateFile,
+	}
+
+	res := runMt(t, repoDir, env, "pr", "420", "review-care-spike")
+
+	if res.exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", res.exitCode, res.stderr)
+	}
+
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("reading state file: %v", err)
+	}
+	var s state.State
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatalf("unmarshalling state: %v", err)
+	}
+	if len(s.Sessions) != 1 {
+		t.Fatalf("Sessions = %+v, want exactly 1", s.Sessions)
+	}
+	if s.Sessions[0].Name != "review-care-spike" {
+		t.Errorf("Sessions[0].Name = %q, want %q", s.Sessions[0].Name, "review-care-spike")
+	}
+	if s.Sessions[0].Description != "PR #420" {
+		t.Errorf("Sessions[0].Description = %q, want %q", s.Sessions[0].Description, "PR #420")
+	}
+}
+
+func TestMain_PR_DigitsOnlyTitle_IsUsageError(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + stateFile,
+	}
+
+	// Without this, `mt pr 420 421` would silently name the session "421".
+	res := runMt(t, repoDir, env, "pr", "420", "421")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	if !strings.Contains(res.stderr, "Usage: mt") {
+		t.Errorf("stderr = %q, want the usage line", res.stderr)
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Errorf("state file %q exists, want no session created", stateFile)
+	}
+}
+
+func TestMain_PR_TooManyArgs_IsUsageError(t *testing.T) {
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "gh", ghStubCheckout)
+	writeStub(t, stubDir, "tmux", tmuxStub)
+
+	repoDir := prRepoWithCommit(t)
+	env := []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"MOTREE_STATE_FILE=" + filepath.Join(t.TempDir(), "state.json"),
+	}
+
+	res := runMt(t, repoDir, env, "pr", "420", "a", "b")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	if !strings.Contains(res.stderr, "Usage: mt") {
+		t.Errorf("stderr = %q, want the usage line", res.stderr)
+	}
+}
