@@ -433,6 +433,7 @@ func runPR(args []string) error {
 		return errUsageShown
 	}
 	prNumber := args[0]
+	title := ""
 
 	d, err := newDeps()
 	if err != nil {
@@ -449,7 +450,7 @@ func runPR(args []string) error {
 	gh := ghutil.GH{Runner: executil.RealRunner{}}
 
 	// Same as runCreate: PR saves before it attaches, so nothing to do here.
-	return mtcmd.PR(d, gh, prNumber, cwd, insideTmux, now)
+	return mtcmd.PR(d, gh, prNumber, title, cwd, insideTmux, now)
 }
 
 // runInstallHooks registers mt's "__hook" subcommand with Claude Code by

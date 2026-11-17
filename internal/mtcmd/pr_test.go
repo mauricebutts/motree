@@ -61,7 +61,7 @@ func TestPR_NonNumericArg_ReturnsError(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	err := PR(d, gh, "12abc", "/tmp/whatever", false, 1)
+	err := PR(d, gh, "12abc", "", "/tmp/whatever", false, 1)
 	if err == nil {
 		t.Fatalf("PR returned nil error, want an error — PR number must be numeric only")
 	}
@@ -80,7 +80,7 @@ func TestPR_GhNotAvailable_ReturnsError(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	err := PR(d, gh, "42", "/tmp/whatever", false, 1)
+	err := PR(d, gh, "42", "", "/tmp/whatever", false, 1)
 	if err == nil {
 		t.Fatalf("PR returned nil error, want an error — gh is not on PATH")
 	}
@@ -102,7 +102,7 @@ func TestPR_NotInsideGitRepo_ReturnsExactErrorText(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	err := PR(d, gh, "42", "/tmp/not-a-repo", false, 1)
+	err := PR(d, gh, "42", "", "/tmp/not-a-repo", false, 1)
 	if err == nil {
 		t.Fatalf("PR returned nil error, want %q", "motree: not inside a git repo")
 	}
@@ -176,7 +176,7 @@ func TestPR_GhLookupFails_SurfacesGhStderrAndCreatesNothing(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = PR(d, gh, prNumber, repoRoot, false, 1)
+		err = PR(d, gh, prNumber, "", repoRoot, false, 1)
 	})
 
 	want := "gh pr view 420 failed: GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)"
@@ -210,7 +210,7 @@ func TestPR_EmptyHeadRef_ReturnsErrorAndCreatesNothing(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = PR(d, gh, prNumber, repoRoot, false, 1)
+		err = PR(d, gh, prNumber, "", repoRoot, false, 1)
 	})
 
 	want := "gh reported no head branch for PR 42"
@@ -256,7 +256,7 @@ func TestPR_HappyPath_DetachedWorktreeThenGhCheckout(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	if err := PR(d, gh, prNumber, repoRoot, false, 7); err != nil {
+	if err := PR(d, gh, prNumber, "", repoRoot, false, 7); err != nil {
 		t.Fatalf("PR returned error: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestPR_LaunchesFixedPromptAndAlwaysAttaches(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	if err := PR(d, gh, prNumber, repoRoot, true, 1); err != nil {
+	if err := PR(d, gh, prNumber, "", repoRoot, true, 1); err != nil {
 		t.Fatalf("PR returned error: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestPR_NewWorktree_PrunesBeforeAddingDetached(t *testing.T) {
 	d := newDeps(gitRunner, tmuxRunner)
 	gh := ghutil.GH{Runner: ghRunner}
 
-	if err := PR(d, gh, prNumber, repoRoot, false, 1); err != nil {
+	if err := PR(d, gh, prNumber, "", repoRoot, false, 1); err != nil {
 		t.Fatalf("PR returned error: %v", err)
 	}
 
@@ -405,5 +405,198 @@ func TestPR_NewWorktree_PrunesBeforeAddingDetached(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
 		t.Errorf("git Calls = %+v, want %+v (prune must happen before worktree add --detach, with no fetch-origin call)", gitRunner.Calls, wantGitCalls)
+	}
+}
+
+// prHappyRunners returns runner queues for one full PR creation path —
+// the same sequence TestPR_HappyPath_DetachedWorktreeThenGhCheckout uses.
+func prHappyRunners(repoRoot string) (git, tmuxR, gh *executil.FakeRunner) {
+	git = &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: repoRoot + "\n"}, // rev-parse --show-toplevel
+			{},                        // worktree prune
+			{},                        // worktree add --detach
+		},
+	}
+	tmuxR = &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, // list-sessions
+			{Stdout: "$1\n"},                       // new-session
+			{}, {}, {}, {}, {},                     // splits, send-keys, attach
+		},
+	}
+	gh = &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "feature-branch\n"}, // gh pr view
+			{},                           // gh pr checkout
+		},
+	}
+	return git, tmuxR, gh
+}
+
+// hasCall reports whether runner recorded a call whose args contain want
+// as a contiguous run.
+func hasCall(runner *executil.FakeRunner, want ...string) bool {
+	for _, call := range runner.Calls {
+		for i := 0; i+len(want) <= len(call.Args); i++ {
+			if reflect.DeepEqual(call.Args[i:i+len(want)], want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestPR_TitleNamesSessionWorktreeAndState(t *testing.T) {
+	forceGhAvailable(t)
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	title := "review-care-spike"
+	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", title)
+
+	gitRunner, tmuxRunner, ghRunner := prHappyRunners(repoRoot)
+	d := newDeps(gitRunner, tmuxRunner)
+
+	if err := PR(d, ghutil.GH{Runner: ghRunner}, "420", title, repoRoot, false, 1); err != nil {
+		t.Fatalf("PR returned error: %v", err)
+	}
+
+	if !hasCall(gitRunner, "worktree", "add", "--detach", worktreePath) {
+		t.Errorf("git Calls = %+v, want a worktree add --detach at %q", gitRunner.Calls, worktreePath)
+	}
+	if !hasCall(tmuxRunner, "new-session", "-d", "-s", title) {
+		t.Errorf("tmux Calls = %+v, want new-session named %q", tmuxRunner.Calls, title)
+	}
+	if len(d.State.Sessions) != 1 {
+		t.Fatalf("State.Sessions = %+v, want exactly 1", d.State.Sessions)
+	}
+	if got := d.State.Sessions[0].Name; got != title {
+		t.Errorf("Sessions[0].Name = %q, want %q", got, title)
+	}
+	// The title replaces the name, not the description — mt ls must still
+	// show which PR this session is for.
+	if got := d.State.Sessions[0].Description; got != "PR #420" {
+		t.Errorf("Sessions[0].Description = %q, want %q", got, "PR #420")
+	}
+}
+
+func TestPR_RecordsPRNumberAgainstTheRepo(t *testing.T) {
+	forceGhAvailable(t)
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+
+	gitRunner, tmuxRunner, ghRunner := prHappyRunners(repoRoot)
+	d := newDeps(gitRunner, tmuxRunner)
+
+	if err := PR(d, ghutil.GH{Runner: ghRunner}, "420", "review-care-spike", repoRoot, false, 1); err != nil {
+		t.Fatalf("PR returned error: %v", err)
+	}
+
+	if got := d.State.SessionForPR(repoRoot, "420"); got != "review-care-spike" {
+		t.Errorf("SessionForPR = %q, want %q", got, "review-care-spike")
+	}
+}
+
+// seedPRSession records the tie that the duplicate guard reads, without
+// creating any worktree on disk.
+func seedPRSession(d *Deps, name, repoRoot, prNumber string) {
+	d.State.UpsertSession(name, "PR #"+prNumber, 1)
+	d.State.EnsureRepoPR(name, repoRoot, filepath.Join(repoRoot, ".claude", "worktrees", name), prNumber)
+}
+
+func TestPR_BarePRNumberWhenAlreadyTitled_ReturnsErrorAndCreatesNothing(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}}, // rev-parse only
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	seedPRSession(d, "review-care-spike", repoRoot, "420")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = PR(d, ghutil.GH{Runner: ghRunner}, "420", "", repoRoot, false, 1)
+	})
+
+	want := "PR 420 is already checked out as session 'review-care-spike'"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	assertNothingCreated(t, out, d, gitRunner, tmuxRunner, ghRunner, repoRoot)
+}
+
+func TestPR_DifferentTitleForSamePR_ReturnsErrorAndCreatesNothing(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}},
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	seedPRSession(d, "review-care-spike", repoRoot, "420")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = PR(d, ghutil.GH{Runner: ghRunner}, "420", "other-name", repoRoot, false, 1)
+	})
+
+	want := "PR 420 is already checked out as session 'review-care-spike'"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	assertNothingCreated(t, out, d, gitRunner, tmuxRunner, ghRunner, repoRoot)
+}
+
+// assertNothingCreated is assertPRLookupOnly's stricter sibling: the
+// duplicate guard returns before gh is consulted at all, so zero gh calls
+// — not one — is the evidence that it fired early.
+func assertNothingCreated(t *testing.T, out string, d *Deps, gitRunner, tmuxRunner, ghRunner *executil.FakeRunner, repoRoot string) {
+	t.Helper()
+
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if len(ghRunner.Calls) != 0 {
+		t.Errorf("gh Calls = %+v, want none — the guard must return before the gh lookup", ghRunner.Calls)
+	}
+	wantGitCalls := []executil.Call{
+		{Name: "git", Args: []string{"-C", repoRoot, "rev-parse", "--show-toplevel"}},
+	}
+	if !reflect.DeepEqual(gitRunner.Calls, wantGitCalls) {
+		t.Errorf("git Calls = %+v, want %+v (no worktree prune/add)", gitRunner.Calls, wantGitCalls)
+	}
+	if len(tmuxRunner.Calls) != 0 {
+		t.Errorf("tmux Calls = %+v, want none", tmuxRunner.Calls)
+	}
+	if len(d.State.Sessions) != 1 {
+		t.Errorf("State.Sessions = %+v, want the seeded session untouched", d.State.Sessions)
+	}
+}
+
+func TestPR_SameTitleWithMissingWorktree_RebuildsRatherThanErroring(t *testing.T) {
+	forceGhAvailable(t)
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	title := "review-care-spike"
+
+	gitRunner, tmuxRunner, ghRunner := prHappyRunners(repoRoot)
+	d := newDeps(gitRunner, tmuxRunner)
+	seedPRSession(d, title, repoRoot, "420") // state holds the tie, nothing on disk
+
+	if err := PR(d, ghutil.GH{Runner: ghRunner}, "420", title, repoRoot, false, 1); err != nil {
+		t.Fatalf("PR returned error: %v, want nil — the same session may rebuild its own worktree", err)
+	}
+
+	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", title)
+	if !hasCall(gitRunner, "worktree", "add", "--detach", worktreePath) {
+		t.Errorf("git Calls = %+v, want the worktree to be rebuilt at %q", gitRunner.Calls, worktreePath)
+	}
+	if len(ghRunner.Calls) == 0 {
+		t.Errorf("gh Calls = none, want the PRHeadRef lookup to have run")
 	}
 }

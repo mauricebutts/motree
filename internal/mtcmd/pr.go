@@ -19,11 +19,18 @@ var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 // — a deliberately preserved typo, not a mistake to "fix".
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
-// PR checks prNumber out into its own "pr-<prNumber>" session/worktree for
-// review. It requires a numeric prNumber and the gh CLI; if the worktree
-// doesn't exist yet, it resolves the PR's head branch via gh.PRHeadRef —
-// returning that lookup's error verbatim, with no worktree, session, or
-// state row created, if it fails or yields no branch — then prunes,
+// PR checks prNumber out into its own session/worktree for review, named
+// title when one is given and "pr-<prNumber>" otherwise. The title
+// replaces the session name, the worktree directory and the state key
+// together; the description stays "PR #<prNumber>" either way, so mt ls
+// still shows which PR a renamed session is for.
+//
+// It requires a numeric prNumber and the gh CLI; if the worktree
+// doesn't exist yet, it refuses when some other session already holds
+// this PR in this repo (see the guard below), then resolves the PR's head
+// branch via gh.PRHeadRef — returning that lookup's error verbatim, with
+// no worktree, session, or state row created, if it fails or yields no
+// branch — then prunes,
 // creates a detached worktree (no base-branch fetch: gh pr checkout
 // fetches the PR's own branch), and runs gh.Checkout inside it so gh
 // manages the local branch/tracking itself.
@@ -32,7 +39,7 @@ const prExplainPrompt = "Please give a high level explanation of this PR and it'
 // except the claude pane (only when the window is newly created) always
 // gets the fixed prExplainPrompt rather than claudecmd.ResumeCommand, and —
 // unlike Spawn — PR always attaches at the end.
-func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64) error {
+func PR(d *Deps, gh ghutil.GH, prNumber, title, cwd string, insideTmux bool, now int64) error {
 	if !prNumberPattern.MatchString(prNumber) {
 		return errors.New("mt: pr requires a numeric PR number")
 	}
@@ -50,10 +57,24 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 	}
 
 	repoName := filepath.Base(repoRoot)
-	name := "pr-" + prNumber
+	name := title
+	if name == "" {
+		name = "pr-" + prNumber
+	}
 	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
 
 	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
+		// Another session already holding this PR means a second worktree
+		// for the same branch, which git refuses halfway through with
+		// "already checked out at ..." from inside gh pr checkout. Refuse
+		// up front instead, naming the session that has it. Sitting behind
+		// the os.Stat above keeps re-running the same invocation
+		// idempotent; the name comparison covers the case where state
+		// still holds the tie but the worktree was removed by hand.
+		if existing := d.State.SessionForPR(repoRoot, prNumber); existing != "" && existing != name {
+			return fmt.Errorf("PR %s is already checked out as session '%s'", prNumber, existing)
+		}
+
 		// gh's own stderr is the only thing that tells a missing PR
 		// apart from a repo gh can't see (wrong account, SSO not
 		// authorized) — both exit 1 — so it goes straight back to the
@@ -78,7 +99,7 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 	}
 
 	d.State.UpsertSession(name, "PR #"+prNumber, now)
-	d.State.EnsureRepo(name, repoRoot, worktreePath)
+	d.State.EnsureRepoPR(name, repoRoot, worktreePath, prNumber)
 
 	sessionID, windowTarget, isNewWindow, err := ensureSessionWindow(d, name, repoName, worktreePath, nil)
 	if err != nil {
