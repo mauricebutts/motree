@@ -36,8 +36,21 @@ func PathFor(cwd string) string {
 	return filepath.Join(Dir(), EscapeCwd(cwd))
 }
 
-// EventStatus maps a Claude Code hook event to a status, clear flag, and ok flag
-func EventStatus(event string) (status Status, clear bool, ok bool) {
+// Notification hook notification_type values. permission_prompt,
+// worker_permission_prompt, and agent_needs_input are genuinely blocked on
+// a decision from the user; idle_prompt just means a turn ended and nobody
+// has replied yet, which isn't a blocked state.
+const (
+	notificationPermissionPrompt       = "permission_prompt"
+	notificationWorkerPermissionPrompt = "worker_permission_prompt"
+	notificationAgentNeedsInput        = "agent_needs_input"
+	notificationIdlePrompt             = "idle_prompt"
+)
+
+// EventStatus maps a Claude Code hook event to a status, clear flag, and ok
+// flag. notificationType is only consulted for the Notification event (it's
+// the hook payload's notification_type field) and ignored otherwise.
+func EventStatus(event, notificationType string) (status Status, clear bool, ok bool) {
 	switch event {
 	case "SessionStart":
 		return Stopped, false, true
@@ -48,7 +61,7 @@ func EventStatus(event string) (status Status, clear bool, ok bool) {
 	case "PostToolUse":
 		return Running, false, true
 	case "Notification":
-		return Waiting, false, true
+		return notificationStatus(notificationType)
 	case "PermissionRequest":
 		return Waiting, false, true
 	case "SubagentStop":
@@ -59,6 +72,20 @@ func EventStatus(event string) (status Status, clear bool, ok bool) {
 		return Stopped, false, true
 	case "SessionEnd":
 		return "", true, true
+	default:
+		return "", false, false
+	}
+}
+
+// notificationStatus maps a Notification hook's notification_type to a
+// status. Types that aren't a blocked-on-user-decision state (including
+// unrecognized ones) are a no-op, same as an unknown event in EventStatus.
+func notificationStatus(notificationType string) (status Status, clear bool, ok bool) {
+	switch notificationType {
+	case notificationPermissionPrompt, notificationWorkerPermissionPrompt, notificationAgentNeedsInput:
+		return Waiting, false, true
+	case notificationIdlePrompt:
+		return Stopped, false, true
 	default:
 		return "", false, false
 	}

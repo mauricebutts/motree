@@ -92,6 +92,131 @@ func TestRun_ClearsStatusOnSessionEnd(t *testing.T) {
 	}
 }
 
+func TestRun_NotificationIdlePrompt_WritesStopped(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "Notification", "notification_type": "idle_prompt", "cwd": "` + cwd + `"}`
+	r := bytes.NewReader([]byte(input))
+
+	err := Run(r)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	status, found, err := statusfile.Read(cwd)
+	if err != nil {
+		t.Fatalf("Read status failed: %v", err)
+	}
+	if !found {
+		t.Fatal("status file not found after Run")
+	}
+	if status != statusfile.Stopped {
+		t.Errorf("expected status Stopped, got %s", status)
+	}
+}
+
+func TestRun_NotificationPermissionPrompt_WritesWaiting(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "Notification", "notification_type": "permission_prompt", "cwd": "` + cwd + `"}`
+	r := bytes.NewReader([]byte(input))
+
+	err := Run(r)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	status, found, err := statusfile.Read(cwd)
+	if err != nil {
+		t.Fatalf("Read status failed: %v", err)
+	}
+	if !found {
+		t.Fatal("status file not found after Run")
+	}
+	if status != statusfile.Waiting {
+		t.Errorf("expected status Waiting, got %s", status)
+	}
+}
+
+func TestRun_NotificationUnrecognizedType_NoopNoError(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "Notification", "notification_type": "auth_success", "cwd": "` + cwd + `"}`
+	r := bytes.NewReader([]byte(input))
+
+	err := Run(r)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	_, found, err := statusfile.Read(cwd)
+	if err != nil {
+		t.Fatalf("Read status failed: %v", err)
+	}
+	if found {
+		t.Fatal("status file should not be created for an unrecognized notification_type")
+	}
+}
+
+func TestRun_SubagentPreToolUse_NoopNoError(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
+	r := bytes.NewReader([]byte(input))
+
+	err := Run(r)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	_, found, err := statusfile.Read(cwd)
+	if err != nil {
+		t.Fatalf("Read status failed: %v", err)
+	}
+	if found {
+		t.Fatal("status file should not be created for a subagent-originated event")
+	}
+}
+
+func TestRun_SubagentStop_NoopNoError(t *testing.T) {
+	cleanup := setupTempStateFile(t)
+	defer cleanup()
+
+	cwd := "/home/user/project"
+
+	// The parent session is Running when the subagent finishes.
+	if err := statusfile.Write(cwd, statusfile.Running); err != nil {
+		t.Fatalf("failed to write initial status: %v", err)
+	}
+
+	input := `{"hook_event_name": "SubagentStop", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
+	r := bytes.NewReader([]byte(input))
+
+	err := Run(r)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	status, found, err := statusfile.Read(cwd)
+	if err != nil {
+		t.Fatalf("Read status failed: %v", err)
+	}
+	if !found {
+		t.Fatal("status file should still exist")
+	}
+	if status != statusfile.Running {
+		t.Errorf("SubagentStop should not overwrite the parent's status, got %s", status)
+	}
+}
+
 func TestRun_UnknownEvent_NoopNoError(t *testing.T) {
 	cleanup := setupTempStateFile(t)
 	defer cleanup()
