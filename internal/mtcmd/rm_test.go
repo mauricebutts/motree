@@ -1,6 +1,7 @@
 package mtcmd
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -486,5 +487,106 @@ func TestRm_HappyPath_PicksAndRemovesSelectedSession(t *testing.T) {
 
 	if len(d.State.Sessions) != 0 {
 		t.Errorf("State.Sessions = %+v, want none", d.State.Sessions)
+	}
+}
+
+func TestRmSelf_OutsideTmux_ReturnsExactError(t *testing.T) {
+	t.Setenv("TMUX", "")
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	var stdout bytes.Buffer
+	err := RmSelf(d, strings.NewReader(""), &stdout)
+	if err == nil {
+		t.Fatal("RmSelf returned nil error, want an error")
+	}
+	wantMsg := "mt: rm --self must be run from inside a tmux session"
+	if err.Error() != wantMsg {
+		t.Errorf("RmSelf error = %q, want %q", err.Error(), wantMsg)
+	}
+	if len(tmuxRunner.Calls) != 0 {
+		t.Errorf("tmux Calls = %+v, want none", tmuxRunner.Calls)
+	}
+}
+
+func TestRmSelf_UntrackedSession_ReturnsExactError(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/fake")
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "myfeature\n"}, // DisplayMessageCurrent("#S")
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+
+	var stdout bytes.Buffer
+	err := RmSelf(d, strings.NewReader(""), &stdout)
+	if err == nil {
+		t.Fatal("RmSelf returned nil error, want an error")
+	}
+	wantMsg := "mt: current session 'myfeature' isn't tracked by mt"
+	if err.Error() != wantMsg {
+		t.Errorf("RmSelf error = %q, want %q", err.Error(), wantMsg)
+	}
+}
+
+func TestRmSelf_ConfirmedYes_RemovesSession(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/fake")
+	wt := existingWorktree(t, "self")
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{}, // worktree remove
+			{}, // branch delete
+		},
+	}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "myfeature\n"},    // DisplayMessageCurrent("#S")
+			{Stdout: "$3:myfeature\n"}, // FindSessionID, inside RemoveSession
+			{},                         // kill-session
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{Name: "myfeature", Repos: []state.Repo{{RepoPath: "/repo/one", WorktreePath: wt}}},
+	}
+
+	var stdout bytes.Buffer
+	if err := RmSelf(d, strings.NewReader("y\n"), &stdout); err != nil {
+		t.Fatalf("RmSelf returned error: %v", err)
+	}
+
+	if d.State.IsTracked("myfeature") {
+		t.Errorf("session 'myfeature' still tracked after RmSelf, want removed")
+	}
+}
+
+func TestRmSelf_DeclinedAnswer_PrintsCancelledAndReturnsNil(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/fake")
+	gitRunner := &executil.FakeRunner{}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "myfeature\n"}, // DisplayMessageCurrent("#S")
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.Sessions = []state.Session{
+		{Name: "myfeature", Repos: []state.Repo{{RepoPath: "/repo/one", WorktreePath: "/wt"}}},
+	}
+
+	var stdout bytes.Buffer
+	if err := RmSelf(d, strings.NewReader("n\n"), &stdout); err != nil {
+		t.Fatalf("RmSelf returned error: %v", err)
+	}
+
+	if !d.State.IsTracked("myfeature") {
+		t.Errorf("session 'myfeature' no longer tracked, want unchanged")
+	}
+	if !strings.Contains(stdout.String(), "mt: cancelled") {
+		t.Errorf("stdout = %q, want it to contain %q", stdout.String(), "mt: cancelled")
+	}
+	if len(gitRunner.Calls) != 0 {
+		t.Errorf("git Calls = %+v, want none", gitRunner.Calls)
 	}
 }
