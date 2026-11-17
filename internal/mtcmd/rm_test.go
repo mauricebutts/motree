@@ -472,7 +472,7 @@ func TestRm_HappyPath_PicksAndRemovesSelectedSession(t *testing.T) {
 		t.Errorf("git Calls = %+v, want %+v", gitRunner.Calls, wantGitCalls)
 	}
 
-	wantFzfPrefix := `'fzf' '--delimiter=\t' '--with-nth=2' '--height=~40%' '--reverse' '--prompt=remove> ' '--preview=echo {3}' '--preview-window=down,3,wrap' < '`
+	wantFzfPrefix := `'fzf' '--delimiter=\t' '--with-nth=2' '--height=~40%' '--reverse' '--read0' '--print0' '--prompt=remove> ' '--preview=echo {3}' '--preview-window=down,3,wrap' < '`
 	if !strings.HasPrefix(fzfScript, wantFzfPrefix) {
 		t.Errorf("fzf script = %q, want prefix %q (mt rm's fzf invocation)", fzfScript, wantFzfPrefix)
 	}

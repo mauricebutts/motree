@@ -14,18 +14,24 @@ import (
 
 // rmFzfArgs builds `mt rm`'s fzf argv:
 //
-//	fzf --delimiter='\t' --with-nth=2 --height=~40% --reverse --prompt='remove> ' --preview='echo {3}' --preview-window=down,3,wrap
+//	fzf --delimiter='\t' --with-nth=2 --height=~40% --reverse --read0 --print0 --prompt='remove> ' --preview='echo {3}' --preview-window=down,3,wrap
 //
 // Unlike mt ls's picker (fzfutil.BuildArgs), this never reloads and its
 // preview is just the raw description field (column 3), not a __mt_preview
 // subprocess call — so it's built here directly rather than through
-// BuildArgs.
+// BuildArgs. --read0/--print0 are still required, though: fzfutil.Run
+// always feeds rows NUL- rather than newline-joined (see its doc comment),
+// so without them fzf falls back to splitting on "\n" and, since rm's rows
+// (see renderRows' includeSubagents=false) contain none, the whole
+// NUL-joined blob reads as a single candidate instead of one per session.
 func rmFzfArgs() []string {
 	return []string{
 		`--delimiter=\t`,
 		"--with-nth=2",
 		"--height=~40%",
 		"--reverse",
+		"--read0",
+		"--print0",
 		"--prompt=remove> ",
 		"--preview=echo {3}",
 		"--preview-window=down,3,wrap",
@@ -56,7 +62,7 @@ func Rm(d *Deps, cwd string) error {
 		return errors.New("mt rm needs fzf installed to pick a session.")
 	}
 
-	rows := RenderRows(d.State)
+	rows := renderRows(d.State, false)
 
 	selectedName, runErr := fzfutil.Run(d.Tmux.Runner, rows, rmFzfArgs())
 	if runErr != nil {
