@@ -189,20 +189,21 @@ esac
 const fzfStub = `head -n 1
 `
 
-// ghStubNoPR fakes `gh pr view ... --jq .headRefName` returning nothing,
-// which is how gh reports a PR number that doesn't exist — the case
-// mtcmd.PR answers with its own "no pr found" line.
-const ghStubNoPR = `exit 0
+// ghStubFailingLookup fakes `gh pr view ... --jq .headRefName` failing
+// the way gh really does when it can't resolve the repo — the case that
+// used to be misreported as a missing PR.
+const ghStubFailingLookup = `echo "GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)" >&2
+exit 1
 `
 
-// TestMain_PR_NoPrFound_PrintsExactlyOneLine covers the sentinel-error
-// plumbing: mtcmd.PR prints "no pr found" itself and returns
-// mtcmd.ErrNoPRFound, and main's reportAndExit must recognise that
-// sentinel and NOT also print its own "mt: no pr found" — one event, one
-// line of output, exit 1.
-func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
+// TestMain_PR_GhLookupFails_PrintsGhErrorOnStderr covers the full
+// plumbing end to end: gh's stderr must survive ghutil -> mtcmd.PR ->
+// main's "mt: %v" print and land on stderr intact, with stdout untouched
+// and exit 1. Previously every gh failure was flattened into a bare "no
+// pr found" on stdout, which told the user a reachable PR didn't exist.
+func TestMain_PR_GhLookupFails_PrintsGhErrorOnStderr(t *testing.T) {
 	stubDir := t.TempDir()
-	writeStub(t, stubDir, "gh", ghStubNoPR)
+	writeStub(t, stubDir, "gh", ghStubFailingLookup)
 	writeStub(t, stubDir, "tmux", tmuxStub)
 
 	repoDir := t.TempDir()
@@ -219,11 +220,12 @@ func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
 	if res.exitCode != 1 {
 		t.Errorf("exit code = %d, want 1", res.exitCode)
 	}
-	if res.stdout != "no pr found\n" {
-		t.Errorf("stdout = %q, want exactly %q", res.stdout, "no pr found\n")
+	if res.stdout != "" {
+		t.Errorf("stdout = %q, want nothing — the failure belongs on stderr", res.stdout)
 	}
-	if strings.Contains(res.stderr, "no pr found") {
-		t.Errorf("stderr = %q, want no second copy of the message — mtcmd.ErrNoPRFound must suppress main's own print", res.stderr)
+	want := "mt: gh pr view 4242 failed: GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)\n"
+	if res.stderr != want {
+		t.Errorf("stderr = %q, want exactly %q", res.stderr, want)
 	}
 }
 

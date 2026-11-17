@@ -19,19 +19,11 @@ var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 // — a deliberately preserved typo, not a mistake to "fix".
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
-// ErrNoPRFound is the sentinel PR returns after it has already printed
-// "no pr found" to stdout itself. It exists for the same reason
-// cmd/mt/main.go's own errUsageShown does: main's dispatch prints every
-// other returned error via "mt: %v", which would put a second line on the
-// screen for this one event. main checks for this sentinel and exits 1
-// silently instead.
-var ErrNoPRFound = errors.New("no pr found")
-
 // PR checks prNumber out into its own "pr-<prNumber>" session/worktree for
 // review. It requires a numeric prNumber and the gh CLI; if the worktree
 // doesn't exist yet, it resolves the PR's head branch via gh.PRHeadRef —
-// printing "no pr found" and returning an error, with no worktree,
-// session, or state row created, if that comes back empty — then prunes,
+// returning that lookup's error verbatim, with no worktree, session, or
+// state row created, if it fails or yields no branch — then prunes,
 // creates a detached worktree (no base-branch fetch: gh pr checkout
 // fetches the PR's own branch), and runs gh.Checkout inside it so gh
 // manages the local branch/tracking itself.
@@ -62,13 +54,16 @@ func PR(d *Deps, gh ghutil.GH, prNumber, cwd string, insideTmux bool, now int64)
 	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
 
 	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
+		// gh's own stderr is the only thing that tells a missing PR
+		// apart from a repo gh can't see (wrong account, SSO not
+		// authorized) — both exit 1 — so it goes straight back to the
+		// caller rather than being flattened into one mt-authored line.
 		headRef, err := gh.PRHeadRef(repoRoot, prNumber)
 		if err != nil {
 			return err
 		}
 		if headRef == "" {
-			fmt.Println("no pr found")
-			return ErrNoPRFound
+			return fmt.Errorf("gh reported no head branch for PR %s", prNumber)
 		}
 
 		if err := d.Git.WorktreePrune(repoRoot); err != nil {

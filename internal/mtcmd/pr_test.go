@@ -118,42 +118,15 @@ func TestPR_NotInsideGitRepo_ReturnsExactErrorText(t *testing.T) {
 	}
 }
 
-func TestPR_HeadRefNotFound_PrintsNoPrFound_CreatesNothing(t *testing.T) {
-	forceGhAvailable(t)
-	repoRoot := t.TempDir()
-	prNumber := "42"
+// assertPRLookupOnly checks that PR stopped right after the gh lookup:
+// nothing printed to stdout, no worktree prune/add, no gh checkout, no
+// tmux, no state row, and no directory left on disk.
+func assertPRLookupOnly(t *testing.T, out string, d *Deps, gitRunner, tmuxRunner, ghRunner *executil.FakeRunner, repoRoot, prNumber string) {
+	t.Helper()
 
-	gitRunner := &executil.FakeRunner{
-		Queue: []executil.Response{
-			{Stdout: repoRoot + "\n"}, // rev-parse --show-toplevel
-		},
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing — the failure belongs on stderr via main's \"mt: %%v\"", out)
 	}
-	tmuxRunner := &executil.FakeRunner{}
-	ghRunner := &executil.FakeRunner{
-		Queue: []executil.Response{
-			{Stdout: ""}, // gh pr view ... --jq .headRefName -> empty
-		},
-	}
-	d := newDeps(gitRunner, tmuxRunner)
-	gh := ghutil.GH{Runner: ghRunner}
-
-	var err error
-	out := captureStdout(t, func() {
-		err = PR(d, gh, prNumber, repoRoot, false, 1)
-	})
-
-	// The returned error must be the ErrNoPRFound sentinel, so main's
-	// dispatch knows PR already printed the user-facing line itself and
-	// skips its own "mt: %v" print — one event, one line of output.
-	if !errors.Is(err, ErrNoPRFound) {
-		t.Fatalf("PR error = %v, want ErrNoPRFound", err)
-	}
-	if out != "no pr found\n" {
-		t.Errorf("stdout = %q, want %q", out, "no pr found\n")
-	}
-
-	// Only the PRHeadRef lookup should have run — no worktree add/checkout,
-	// no tmux, no state.
 	if len(ghRunner.Calls) != 1 {
 		t.Errorf("gh Calls = %+v, want exactly 1 (the PRHeadRef lookup)", ghRunner.Calls)
 	}
@@ -169,11 +142,82 @@ func TestPR_HeadRefNotFound_PrintsNoPrFound_CreatesNothing(t *testing.T) {
 	if len(d.State.Sessions) != 0 {
 		t.Errorf("State.Sessions = %+v, want none", d.State.Sessions)
 	}
-
 	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", "pr-"+prNumber)
 	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
 		t.Errorf("worktreePath %q unexpectedly exists", worktreePath)
 	}
+}
+
+// A failing gh lookup must reach the user verbatim. gh reports a missing
+// PR and a repo it can't see (wrong account, un-authorized SSO) with the
+// same exit code and only different stderr, so mt printing its own
+// blanket "no pr found" actively misdiagnosed the second case.
+func TestPR_GhLookupFails_SurfacesGhStderrAndCreatesNothing(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+	prNumber := "420"
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: repoRoot + "\n"}, // rev-parse --show-toplevel
+		},
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{
+				Stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)\n",
+				Err:    errors.New("exit status 1"),
+			},
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	gh := ghutil.GH{Runner: ghRunner}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = PR(d, gh, prNumber, repoRoot, false, 1)
+	})
+
+	want := "gh pr view 420 failed: GraphQL: Could not resolve to a Repository with the name 'acme/widgets'. (repository)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	assertPRLookupOnly(t, out, d, gitRunner, tmuxRunner, ghRunner, repoRoot, prNumber)
+}
+
+// gh exiting 0 but printing nothing leaves us with no branch to check
+// out, so PR must still refuse rather than build a worktree around an
+// empty head ref.
+func TestPR_EmptyHeadRef_ReturnsErrorAndCreatesNothing(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+	prNumber := "42"
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: repoRoot + "\n"}, // rev-parse --show-toplevel
+		},
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: ""}, // gh pr view ... --jq .headRefName -> empty, exit 0
+		},
+	}
+	d := newDeps(gitRunner, tmuxRunner)
+	gh := ghutil.GH{Runner: ghRunner}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = PR(d, gh, prNumber, repoRoot, false, 1)
+	})
+
+	want := "gh reported no head branch for PR 42"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	assertPRLookupOnly(t, out, d, gitRunner, tmuxRunner, ghRunner, repoRoot, prNumber)
 }
 
 func TestPR_HappyPath_DetachedWorktreeThenGhCheckout(t *testing.T) {

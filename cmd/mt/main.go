@@ -112,14 +112,12 @@ func main() {
 	}
 }
 
-// reportAndExit prints err and exits 1, skipping the print for the two
-// sentinels that mean "the callee already printed this itself":
-// errUsageShown (it wrote usage() to stderr) and mtcmd.ErrNoPRFound
-// (`mt pr` echoed its own "no pr found" line to stdout). Shared by the
-// create/spawn/pr dispatch branches above, the only ones that produce
-// them.
+// reportAndExit prints err and exits 1, skipping the print for
+// errUsageShown — the one sentinel meaning "the callee already printed
+// this itself" (it wrote usage() to stderr). Shared by the
+// create/spawn/pr dispatch branches above, the only ones that produce it.
 func reportAndExit(err error) {
-	if err != errUsageShown && !errors.Is(err, mtcmd.ErrNoPRFound) {
+	if err != errUsageShown {
 		fmt.Fprintf(os.Stderr, "mt: %v\n", err)
 	}
 	os.Exit(1)
@@ -141,10 +139,11 @@ mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>]
     does not attach — for firing off several sessions in a row.
 
 mt pr <pr_number>
-    Look up <pr_number> with gh. If it doesn't exist, print "no pr found".
-    Otherwise create/attach a session named pr-<pr_number>, with a worktree
-    checked out to that PR's branch, and have the claude pane open already
-    explaining the PR.
+    Look up <pr_number> with gh. If gh can't resolve it, report gh's own
+    error — which distinguishes a PR that doesn't exist from a repo gh
+    can't see (wrong account, SSO not authorized). Otherwise create/attach
+    a session named pr-<pr_number>, with a worktree checked out to that
+    PR's branch, and have the claude pane open already explaining the PR.
 
 mt ls
     List tracked sessions and attach to the one you pick.

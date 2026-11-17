@@ -3,6 +3,7 @@
 package ghutil
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 
@@ -33,13 +34,27 @@ func Available() bool {
 
 // PRHeadRef resolves prNumber's head branch name, running
 // "gh pr view <prNumber> --json headRefName --jq .headRefName" from
-// repoRoot. It returns "" (no error) on any failure or empty output —
-// callers can't distinguish "PR not found" from "gh/network failure", by
-// design.
+// repoRoot.
+//
+// Any gh failure is returned as an error carrying gh's own stderr, which
+// is the only thing that distinguishes the possible causes: gh words a
+// missing PR ("Could not resolve to a PullRequest with the number of N")
+// and an unreachable repo ("Could not resolve to a Repository with the
+// name 'owner/repo'" — wrong account, missing SSO authorization, no
+// access) identically apart from that text, and both exit 1. This used to
+// collapse every one of them into "" and let the caller print "no pr
+// found", which reported a plain auth problem as a nonexistent PR.
+//
+// A successful run with empty output still yields "" and a nil error;
+// it's the caller's to interpret.
 func (g GH) PRHeadRef(repoRoot, prNumber string) (string, error) {
-	stdout, err := g.runIn(repoRoot, "gh", "pr", "view", prNumber, "--json", "headRefName", "--jq", ".headRefName")
+	stdout, stderr, err := g.runIn(repoRoot, "gh", "pr", "view", prNumber, "--json", "headRefName", "--jq", ".headRefName")
 	if err != nil {
-		return "", nil
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", fmt.Errorf("gh pr view %s failed: %s", prNumber, detail)
 	}
 	return strings.TrimSpace(stdout), nil
 }
@@ -48,7 +63,7 @@ func (g GH) PRHeadRef(repoRoot, prNumber string) (string, error) {
 // working directory, so gh manages that worktree's local branch and its
 // tracking itself.
 func (g GH) Checkout(worktreePath, prNumber string) error {
-	_, err := g.runIn(worktreePath, "gh", "pr", "checkout", prNumber)
+	_, _, err := g.runIn(worktreePath, "gh", "pr", "checkout", prNumber)
 	return err
 }
 
@@ -64,7 +79,7 @@ func (g GH) Checkout(worktreePath, prNumber string) error {
 // each argument POSIX-single-quote-escaped (via tmux.Quote, the same
 // escaping tmux's own send-keys commands rely on) so it survives
 // unexpanded regardless of spaces or shell metacharacters in dir/args.
-func (g GH) runIn(dir, name string, args ...string) (string, error) {
+func (g GH) runIn(dir, name string, args ...string) (stdout, stderr string, err error) {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, tmux.Quote(name))
 	for _, a := range args {
@@ -72,6 +87,5 @@ func (g GH) runIn(dir, name string, args ...string) (string, error) {
 	}
 	script := "cd " + tmux.Quote(dir) + " && " + strings.Join(parts, " ")
 
-	stdout, _, err := g.Runner.Run("sh", "-c", script)
-	return stdout, err
+	return g.Runner.Run("sh", "-c", script)
 }
