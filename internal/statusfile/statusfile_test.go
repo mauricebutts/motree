@@ -42,7 +42,6 @@ func TestEventStatus_MapsAllTenEvents(t *testing.T) {
 		{"UserPromptSubmit", Running, false, true},
 		{"PreToolUse", Running, false, true},
 		{"PostToolUse", Running, false, true},
-		{"Notification", Waiting, false, true},
 		{"PermissionRequest", Waiting, false, true},
 		{"SubagentStop", Subagents, false, true},
 		{"Stop", Stopped, false, true},
@@ -52,7 +51,7 @@ func TestEventStatus_MapsAllTenEvents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.event, func(t *testing.T) {
-			status, clear, ok := EventStatus(tt.event)
+			status, clear, ok := EventStatus(tt.event, "")
 			if status != tt.status || clear != tt.clear || ok != tt.ok {
 				t.Errorf("EventStatus(%q) = (%q, %v, %v), want (%q, %v, %v)",
 					tt.event, status, clear, ok, tt.status, tt.clear, tt.ok)
@@ -62,7 +61,7 @@ func TestEventStatus_MapsAllTenEvents(t *testing.T) {
 }
 
 func TestEventStatus_UnknownEvent_NotOk(t *testing.T) {
-	status, clear, ok := EventStatus("UnknownEvent")
+	status, clear, ok := EventStatus("UnknownEvent", "")
 	if ok {
 		t.Errorf("EventStatus(\"UnknownEvent\") ok = true, want false")
 	}
@@ -71,6 +70,38 @@ func TestEventStatus_UnknownEvent_NotOk(t *testing.T) {
 	}
 	if clear {
 		t.Errorf("EventStatus(\"UnknownEvent\") clear = true, want false")
+	}
+}
+
+func TestEventStatus_Notification_MapsByNotificationType(t *testing.T) {
+	tests := []struct {
+		notificationType string
+		status           Status
+		ok               bool
+	}{
+		{"permission_prompt", Waiting, true},
+		{"worker_permission_prompt", Waiting, true},
+		{"agent_needs_input", Waiting, true},
+		{"idle_prompt", Stopped, true},
+		{"agent_completed", "", false},
+		{"elicitation_complete", "", false},
+		{"elicitation_response", "", false},
+		{"auth_success", "", false},
+		{"push_notification", "", false},
+		{"computer_use_enter", "", false},
+		{"computer_use_exit", "", false},
+		{"", "", false},
+		{"some_unrecognized_type", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.notificationType, func(t *testing.T) {
+			status, clear, ok := EventStatus("Notification", tt.notificationType)
+			if status != tt.status || clear != false || ok != tt.ok {
+				t.Errorf("EventStatus(\"Notification\", %q) = (%q, %v, %v), want (%q, false, %v)",
+					tt.notificationType, status, clear, ok, tt.status, tt.ok)
+			}
+		})
 	}
 }
 
