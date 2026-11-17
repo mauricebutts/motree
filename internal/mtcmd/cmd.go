@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mauricebutts/motree/internal/fzfutil"
 	"github.com/mauricebutts/motree/internal/tmux"
@@ -47,16 +48,22 @@ func WindowTargetFor(d *Deps, name string) (target string, found bool) {
 // window, pane index 1) mirror targetName's claude pane. Ported from the
 // original bash do_cmd_dock.
 //
-// Dock returns a non-nil error only when it can't even locate the running
+// Dock returns a non-nil error for the two cases bash's own do_cmd_dock
+// returns 1 for rather than falling through to its `|| true`-guarded
+// body: an empty targetName, and not being able to locate the running
 // command center itself (callers only ever reach __mt_cmd_dock through
-// its own fzf picker, which can't exist without that session, so this is
-// a defensive case, not an expected one). Every other "can't proceed"
-// case — no live session for targetName, no claude pane — reports via
-// ShowMessage into the right pane and returns nil, matching bash's
-// `do_cmd_dock ... || true` throughout: a failed tmux call along the way
-// (e.g. a stale pane disappearing mid-dock) is likewise swallowed rather
-// than surfaced, exactly as bash's own `|| true` suffixes do.
-func Dock(d *Deps, mtBinaryPath, targetName string) error {
+// its own fzf picker, which can't exist without that session, so this
+// second case is defensive, not expected in practice). Every other
+// "can't proceed" case — no live session for targetName, no claude pane
+// — reports via ShowMessage into the right pane and returns nil, matching
+// bash's `do_cmd_dock ... || true` throughout: a failed tmux call along
+// the way (e.g. a stale pane disappearing mid-dock) is likewise swallowed
+// rather than surfaced, exactly as bash's own `|| true` suffixes do.
+func Dock(d *Deps, targetName string) error {
+	if targetName == "" {
+		return fmt.Errorf("mt cmd: dock requires a target name")
+	}
+
 	cmdSessionID, err := d.Tmux.FindSessionID(CmdSessionName)
 	if err != nil {
 		return err
@@ -71,7 +78,7 @@ func Dock(d *Deps, mtBinaryPath, targetName string) error {
 		_ = d.Tmux.ShowMessage(rightPane, fmt.Sprintf("mt cmd: '%s' has no running session", targetName))
 		return nil
 	}
-	targetSessionID, windowName, _ := cutFirstColon(targetWindow)
+	targetSessionID, windowName, _ := strings.Cut(targetWindow, ":")
 
 	claudePane, found, err := d.Tmux.FindClaudePane(targetSessionID, windowName)
 	if err != nil {
@@ -111,19 +118,6 @@ func Dock(d *Deps, mtBinaryPath, targetName string) error {
 	_ = d.Tmux.SelectPane(rightPane)
 
 	return nil
-}
-
-// cutFirstColon splits s at its first ":", matching the "<sessionID>:
-// <windowName>" shape WindowTargetFor produces (a tmux session ID never
-// contains ":", so the first colon unambiguously separates it from the
-// window name that follows).
-func cutFirstColon(s string) (before, after string, ok bool) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return s, "", false
 }
 
 // cmdListFzfArgs builds `__mt_cmd_list`'s fzf argv, ported directly from
@@ -229,11 +223,6 @@ func Quit(d *Deps) error {
 	return d.Tmux.KillSession(cmdSessionID)
 }
 
-// cmdWindowSize is the fixed size passed to "tmux new-session" when
-// creating the command center, matching the original bash do_cmd's
-// "-x 200 -y 50".
-var cmdWindowSize = &tmux.WindowSize{X: 200, Y: 50}
-
 // Cmd is the full `mt cmd` entrypoint: finds or creates the command
 // center (CmdSessionName's "cmd" window, with the picker in pane 0 and
 // the mirror pane at index 1), then attaches to it. Ported from the
@@ -261,7 +250,7 @@ func Cmd(d *Deps, mtBinaryPath string, insideTmux bool) error {
 		if err != nil {
 			return err
 		}
-		sessionID, err = d.Tmux.NewSession(CmdSessionName, "cmd", cwd, cmdWindowSize)
+		sessionID, err = d.Tmux.NewSession(CmdSessionName, "cmd", cwd, &tmux.WindowSize{X: 200, Y: 50})
 		if err != nil {
 			return err
 		}
@@ -273,9 +262,10 @@ func Cmd(d *Deps, mtBinaryPath string, insideTmux bool) error {
 		if err := d.Tmux.SendKeys(windowTarget+".0", pickerCmd); err != nil {
 			return err
 		}
-		if err := d.Tmux.SelectPane(windowTarget + ".0"); err != nil {
-			return err
-		}
+		// Best-effort, matching bash's "|| true" on this same select-pane:
+		// a failed focus of the picker pane shouldn't abort the whole `mt
+		// cmd` invocation.
+		_ = d.Tmux.SelectPane(windowTarget + ".0")
 	} else {
 		windowTarget := sessionID + ":cmd"
 		pid, err := d.Tmux.PanePID(windowTarget + ".0")

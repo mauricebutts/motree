@@ -81,6 +81,18 @@ func TestWindowTargetFor_UsesFirstRepoBasename(t *testing.T) {
 	}
 }
 
+func TestDock_EmptyTargetName_ReturnsErrorWithoutTouchingTmux(t *testing.T) {
+	fake := &executil.FakeRunner{}
+	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: &state.State{}}
+
+	if err := Dock(d, ""); err == nil {
+		t.Fatal("Dock returned nil error, want an error for an empty target name")
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("Calls = %+v, want none", fake.Calls)
+	}
+}
+
 func TestDock_NoCmdSession_ReturnsErrorWithNoEmbeddedPrefix(t *testing.T) {
 	fake := &executil.FakeRunner{
 		Queue: []executil.Response{
@@ -89,7 +101,7 @@ func TestDock_NoCmdSession_ReturnsErrorWithNoEmbeddedPrefix(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: &state.State{}}
 
-	err := Dock(d, "/usr/local/bin/mt", "feature")
+	err := Dock(d, "feature")
 	if err == nil {
 		t.Fatal("Dock returned nil error, want an error — the command center isn't running")
 	}
@@ -114,7 +126,7 @@ func TestDock_NoLiveSession_WritesMessageAndReturnsNil(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: dockTestState("feature", "/repos/myrepo")}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 
@@ -138,7 +150,7 @@ func TestDock_NoClaudePane_WritesMessageAndReturnsNil(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: dockTestState("feature", "/repos/myrepo")}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 
@@ -166,7 +178,7 @@ func TestDock_AlreadyMirroring_OnlySelectsPane(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: dockTestState("feature", "/repos/myrepo")}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 
@@ -203,7 +215,7 @@ func TestDock_FirstDock_SendsAttachKeystroke(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: dockTestState("feature", "/repos/myrepo")}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 
@@ -252,7 +264,7 @@ func TestDock_RedockDifferentSession_ZoomsOffPreviousFirst(t *testing.T) {
 	st.Sessions = append(st.Sessions, state.Session{Name: "other", Repos: []state.Repo{{RepoPath: "/repos/otherrepo", WorktreePath: "/wt2"}}})
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: st}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 
@@ -298,7 +310,7 @@ func TestDock_ExistingMirrorClient_UsesSwitchClientNotSendKeys(t *testing.T) {
 	}
 	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: dockTestState("feature", "/repos/myrepo")}
 
-	if err := Dock(d, "/usr/local/bin/mt", "feature"); err != nil {
+	if err := Dock(d, "feature"); err != nil {
 		t.Fatalf("Dock returned error: %v", err)
 	}
 

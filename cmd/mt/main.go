@@ -301,12 +301,7 @@ func runCmdDock(name string) error {
 		return err
 	}
 
-	mtBinaryPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to resolve mt binary path: %w", err)
-	}
-
-	return mtcmd.Dock(d, mtBinaryPath, name)
+	return mtcmd.Dock(d, name)
 }
 
 // runCmdList runs `mt __mt_cmd_list`: the command center's left-pane fzf
