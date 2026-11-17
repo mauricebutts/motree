@@ -145,7 +145,7 @@ func RemoveSession(d *Deps, name string) error {
 // can feed/capture them.
 func RmSelf(d *Deps, stdin io.Reader, stdout io.Writer) error {
 	if os.Getenv("TMUX") == "" {
-		return errors.New("mt: rm --self must be run from inside a tmux session")
+		return errors.New("rm --self must be run from inside a tmux session")
 	}
 
 	name, err := d.Tmux.DisplayMessageCurrent("#S")
@@ -154,7 +154,7 @@ func RmSelf(d *Deps, stdin io.Reader, stdout io.Writer) error {
 	}
 
 	if !d.State.IsTracked(name) {
-		return fmt.Errorf("mt: current session '%s' isn't tracked by mt", name)
+		return fmt.Errorf("current session '%s' isn't tracked by mt", name)
 	}
 
 	fmt.Fprintf(stdout, "Remove session '%s' and its worktree(s)? [y/N] ", name)

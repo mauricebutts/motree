@@ -228,6 +228,25 @@ func TestMain_PR_NoPrFound_PrintsExactlyOneLine(t *testing.T) {
 	}
 }
 
+// TestMain_RmSelf_OutsideTmux_PrintsExactSingleLine asserts the actual
+// printed stderr bytes, not just the returned error's text — main.go
+// prefixes every returned error with "mt: ", so an RmSelf error string
+// that itself starts with "mt: " ends up doubled on the real terminal
+// even though a test that only checks err.Error() would never catch it.
+func TestMain_RmSelf_OutsideTmux_PrintsExactSingleLine(t *testing.T) {
+	env := baseEnv(t)
+
+	res := runMt(t, t.TempDir(), env, "rm", "--self")
+
+	if res.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", res.exitCode)
+	}
+	want := "mt: rm --self must be run from inside a tmux session\n"
+	if res.stderr != want {
+		t.Errorf("stderr = %q, want exactly %q", res.stderr, want)
+	}
+}
+
 func TestMain_CreateAndRm_PersistStateToDiskAcrossInvocations(t *testing.T) {
 	stubDir := t.TempDir()
 	writeStub(t, stubDir, "tmux", tmuxStub)

@@ -62,7 +62,7 @@ func Dock(d *Deps, mtBinaryPath, targetName string) error {
 		return err
 	}
 	if cmdSessionID == "" {
-		return fmt.Errorf("mt cmd: command center isn't running")
+		return fmt.Errorf("command center isn't running")
 	}
 	rightPane := cmdSessionID + ":cmd.1"
 
@@ -251,7 +251,7 @@ func Cmd(d *Deps, mtBinaryPath string, insideTmux bool) error {
 	}
 
 	if sessionID != "" && len(d.State.ReposFor(CmdSessionName)) > 0 {
-		return fmt.Errorf("mt cmd: a tmux session named '%s' exists and is tracked as a real worktree session — refusing to touch it. This shouldn't happen; if it does, something is using that reserved name.", CmdSessionName)
+		return fmt.Errorf("a tmux session named '%s' exists and is tracked as a real worktree session — refusing to touch it. This shouldn't happen; if it does, something is using that reserved name.", CmdSessionName)
 	}
 
 	pickerCmd := tmux.Quote(mtBinaryPath) + " __mt_cmd_list"

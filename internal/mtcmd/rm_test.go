@@ -501,7 +501,7 @@ func TestRmSelf_OutsideTmux_ReturnsExactError(t *testing.T) {
 	if err == nil {
 		t.Fatal("RmSelf returned nil error, want an error")
 	}
-	wantMsg := "mt: rm --self must be run from inside a tmux session"
+	wantMsg := "rm --self must be run from inside a tmux session"
 	if err.Error() != wantMsg {
 		t.Errorf("RmSelf error = %q, want %q", err.Error(), wantMsg)
 	}
@@ -525,7 +525,7 @@ func TestRmSelf_UntrackedSession_ReturnsExactError(t *testing.T) {
 	if err == nil {
 		t.Fatal("RmSelf returned nil error, want an error")
 	}
-	wantMsg := "mt: current session 'myfeature' isn't tracked by mt"
+	wantMsg := "current session 'myfeature' isn't tracked by mt"
 	if err.Error() != wantMsg {
 		t.Errorf("RmSelf error = %q, want %q", err.Error(), wantMsg)
 	}

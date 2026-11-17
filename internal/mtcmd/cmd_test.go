@@ -81,6 +81,24 @@ func TestWindowTargetFor_UsesFirstRepoBasename(t *testing.T) {
 	}
 }
 
+func TestDock_NoCmdSession_ReturnsErrorWithNoEmbeddedPrefix(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Stdout: "\n"}, // FindSessionID(cmd) -> no match
+		},
+	}
+	d := &Deps{Tmux: tmux.Tmux{Runner: fake}, State: &state.State{}}
+
+	err := Dock(d, "/usr/local/bin/mt", "feature")
+	if err == nil {
+		t.Fatal("Dock returned nil error, want an error — the command center isn't running")
+	}
+	// Same "no embedded prefix" rule as TestCmd_ReservedNameCollision_ReturnsError.
+	if strings.HasPrefix(err.Error(), "mt: ") || strings.HasPrefix(err.Error(), "mt cmd: ") {
+		t.Errorf("Dock error = %q, want no embedded \"mt: \"/\"mt cmd: \" prefix (main.go adds its own)", err.Error())
+	}
+}
+
 func dockTestState(name, repoPath string) *state.State {
 	return &state.State{Sessions: []state.Session{
 		{Name: name, Repos: []state.Repo{{RepoPath: repoPath, WorktreePath: "/wt"}}},
@@ -521,6 +539,12 @@ func TestCmd_ReservedNameCollision_ReturnsError(t *testing.T) {
 	err := Cmd(d, "/usr/local/bin/mt", true)
 	if err == nil {
 		t.Fatal("Cmd returned nil error, want an error about the reserved name collision")
+	}
+	// Must not itself start with "mt: " or "mt cmd: " — main.go prepends
+	// "mt: " to every returned error, so an error string that embeds its
+	// own prefix doubles up on the real terminal (e.g. "mt: mt cmd: ...").
+	if strings.HasPrefix(err.Error(), "mt: ") || strings.HasPrefix(err.Error(), "mt cmd: ") {
+		t.Errorf("Cmd error = %q, want no embedded \"mt: \"/\"mt cmd: \" prefix (main.go adds its own)", err.Error())
 	}
 
 	wantCalls := []executil.Call{
