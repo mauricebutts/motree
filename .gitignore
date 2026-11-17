@@ -1,0 +1,7 @@
+# Build output (make build / go build ./cmd/mt)
+/mt
+
+# Subagent-driven-development scratch workspace (briefs, reports, review
+# diffs) — never meant to be committed; superpowers:subagent-driven-development
+# deletes it itself once a plan's final review is clean.
+/.superpowers/
