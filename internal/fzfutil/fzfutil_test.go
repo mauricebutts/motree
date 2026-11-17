@@ -3,6 +3,9 @@ package fzfutil
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -12,21 +15,24 @@ import (
 	"github.com/mauricebutts/motree/internal/executil"
 )
 
-// forceCurlUnavailable overrides CurlLookPath so SupportsListen's curl
-// check deterministically fails, independent of whether curl actually
-// happens to be installed on whatever machine runs `go test`.
-func forceCurlUnavailable(t *testing.T) {
+// shortSocketPath generates a short, not-yet-existing path for a test's
+// Unix-socket listener, directly under the OS temp root rather than
+// t.TempDir() (which nests under a directory named after the test
+// function and routinely exceeds the ~104-byte sun_path limit on macOS).
+// Matches the production defaultNewFzfSocketPath's own approach.
+func shortSocketPath(t *testing.T) string {
 	t.Helper()
-	orig := CurlLookPath
-	CurlLookPath = func(file string) (string, error) { return "", errors.New("executable file not found in $PATH") }
-	t.Cleanup(func() { CurlLookPath = orig })
-}
-
-func forceCurlAvailable(t *testing.T) {
-	t.Helper()
-	orig := CurlLookPath
-	CurlLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
-	t.Cleanup(func() { CurlLookPath = orig })
+	f, err := os.CreateTemp("", "mt-fzf-test-*.sock")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	name := f.Name()
+	f.Close()
+	if err := os.Remove(name); err != nil {
+		t.Fatalf("os.Remove(%q): %v", name, err)
+	}
+	t.Cleanup(func() { os.Remove(name) })
+	return name
 }
 
 func TestBuildArgs_WithoutListen_OmitsListenFlag(t *testing.T) {
@@ -62,26 +68,7 @@ func TestBuildArgs_WithListen_IncludesListenAndPreviewFlags(t *testing.T) {
 	}
 }
 
-func TestSupportsListen_FalseWhenCurlMissing(t *testing.T) {
-	forceCurlUnavailable(t)
-
-	runner := &executil.FakeRunner{
-		Queue: []executil.Response{
-			{Stdout: "    --listen=[addr]  Start HTTP server\n"},
-		},
-	}
-
-	if got := SupportsListen(runner); got {
-		t.Errorf("SupportsListen = true, want false (curl missing)")
-	}
-	if len(runner.Calls) != 0 {
-		t.Errorf("runner Calls = %+v, want none — curl check must short-circuit before running fzf --help", runner.Calls)
-	}
-}
-
 func TestSupportsListen_FalseWhenFzfHelpLacksListen(t *testing.T) {
-	forceCurlAvailable(t)
-
 	runner := &executil.FakeRunner{
 		Queue: []executil.Response{
 			{Stdout: "usage: fzf [options]\n"},
@@ -93,9 +80,7 @@ func TestSupportsListen_FalseWhenFzfHelpLacksListen(t *testing.T) {
 	}
 }
 
-func TestSupportsListen_TrueWhenCurlPresentAndFzfHelpMentionsListen(t *testing.T) {
-	forceCurlAvailable(t)
-
+func TestSupportsListen_TrueWhenFzfHelpMentionsListen(t *testing.T) {
 	runner := &executil.FakeRunner{
 		Queue: []executil.Response{
 			{Stdout: "    --listen=[addr]  Start HTTP server\n"},
@@ -103,7 +88,7 @@ func TestSupportsListen_TrueWhenCurlPresentAndFzfHelpMentionsListen(t *testing.T
 	}
 
 	if got := SupportsListen(runner); !got {
-		t.Errorf("SupportsListen = false, want true (curl present, fzf --help mentions --listen)")
+		t.Errorf("SupportsListen = false, want true (fzf --help mentions --listen)")
 	}
 
 	wantCalls := []executil.Call{
@@ -232,59 +217,66 @@ func TestRun_RealRunnerWrappedExitStatus1_ReturnsEmptyNoError(t *testing.T) {
 	}
 }
 
-// recordedCalls is a mutex-guarded call log, used instead of
-// executil.FakeRunner's own (unguarded) Calls slice so a test can safely
-// read it from the main goroutine while StartReloadPoller's background
-// goroutine may still be concurrently appending to it.
-type recordedCalls struct {
-	mu    sync.Mutex
-	calls []executil.Call
+// recordedRequests is a mutex-guarded request log, used instead of a bare
+// slice so a test can safely read it from the main goroutine while
+// StartReloadPoller's background goroutine may still be concurrently
+// appending to it via the HTTP handler goroutine(s) serving its requests.
+type recordedRequests struct {
+	mu     sync.Mutex
+	bodies []string
 }
 
-func (r *recordedCalls) add(c executil.Call) {
+func (r *recordedRequests) add(body string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, c)
+	r.bodies = append(r.bodies, body)
 }
 
-func (r *recordedCalls) snapshot() []executil.Call {
+func (r *recordedRequests) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]executil.Call{}, r.calls...)
+	return append([]string{}, r.bodies...)
 }
 
 func TestStartReloadPoller_PostsToSocketUntilCancelled(t *testing.T) {
-	var recorded recordedCalls
-	runner := &executil.FakeRunner{
-		Responses: func(call executil.Call) (string, string, error) {
-			recorded.add(call)
-			return "", "", nil
-		},
+	socketPath := shortSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("net.Listen(unix, %q): %v", socketPath, err)
 	}
+	defer listener.Close()
+
+	var recorded recordedRequests
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			recorded.add(string(body))
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go server.Serve(listener)
+	defer server.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	StartReloadPoller(ctx, runner, "/usr/local/bin/mt", "/tmp/mt-fzf-test.sock")
+	wait := StartReloadPoller(ctx, "/usr/local/bin/mt", socketPath)
 
 	time.Sleep(1200 * time.Millisecond)
 	cancel()
-	time.Sleep(100 * time.Millisecond)
-	callsAfterCancel := len(recorded.snapshot())
+	wait()
+	requestsAfterCancel := len(recorded.snapshot())
 
 	time.Sleep(1200 * time.Millisecond)
-	if got := len(recorded.snapshot()); got != callsAfterCancel {
-		t.Errorf("recorded calls grew from %d to %d after cancel — poller did not stop", callsAfterCancel, got)
+	if got := len(recorded.snapshot()); got != requestsAfterCancel {
+		t.Errorf("recorded requests grew from %d to %d after cancel — poller did not stop", requestsAfterCancel, got)
 	}
-	if callsAfterCancel == 0 {
-		t.Fatalf("recorded calls = 0, want at least 1 curl call to have fired before cancel")
+	if requestsAfterCancel == 0 {
+		t.Fatalf("recorded requests = 0, want at least 1 reload request to have landed before cancel")
 	}
 
-	call := recorded.snapshot()[0]
-	if call.Name != "curl" {
-		t.Errorf("call.Name = %q, want %q", call.Name, "curl")
-	}
-	wantArgs := []string{"-s", "-o", "/dev/null", "--unix-socket", "/tmp/mt-fzf-test.sock", "http", "-d", "reload('/usr/local/bin/mt' __mt_rows)"}
-	if strings.Join(call.Args, " ") != strings.Join(wantArgs, " ") {
-		t.Errorf("call.Args = %+v, want %+v", call.Args, wantArgs)
+	wantBody := "reload('/usr/local/bin/mt' __mt_rows)"
+	if got := recorded.snapshot()[0]; got != wantBody {
+		t.Errorf("request body = %q, want %q", got, wantBody)
 	}
 }
 

@@ -6,8 +6,9 @@ package fzfutil
 
 import (
 	"context"
+	"net"
+	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -15,29 +16,13 @@ import (
 	"github.com/mauricebutts/motree/internal/tmux"
 )
 
-// CurlLookPath resolves "curl" to an executable's path, exactly like
-// exec.LookPath (its default value). It's a package-level var rather than
-// a direct exec.LookPath call so SupportsListen is deterministically
-// testable, the same trick ghutil.LookPath uses for "gh" — tests (in this
-// package and in callers like mtcmd, which need to force listen=true to
-// test Ls's live-reload path) can reassign it to force the "curl is/isn't
-// on PATH" result, instead of SupportsListen's result silently depending
-// on whether curl happens to be installed on whatever machine runs
-// `go test`. Reassign the original value back (e.g. via t.Cleanup) after
-// overriding it.
-var CurlLookPath = exec.LookPath
-
 // SupportsListen reports whether this machine's fzf can run `mt ls`'s
-// live-reload mechanism: curl must be on PATH (the poller shells out to
-// it), and the installed fzf's --help output must mention --listen. Both
-// are required, mirroring the original bash do_ls's
-// `command -v curl >/dev/null 2>&1 && fzf --help 2>&1 | grep -q -- '--listen'`
-// check.
+// live-reload mechanism: the installed fzf's --help output must mention
+// --listen. The original bash do_ls additionally required `curl` on PATH
+// (it shelled out to curl to talk to fzf's --listen socket); this port
+// talks to that socket directly over HTTP instead (see
+// StartReloadPoller), so no external HTTP client binary is required.
 func SupportsListen(runner executil.Runner) bool {
-	if _, err := CurlLookPath("curl"); err != nil {
-		return false
-	}
-
 	stdout, stderr, _ := runner.Run("fzf", "--help")
 	return strings.Contains(stdout, "--listen") || strings.Contains(stderr, "--listen")
 }
@@ -133,19 +118,33 @@ func Run(runner executil.Runner, rows []string, args []string) (selectedName str
 // StartReloadPoller starts a background goroutine that, once per second,
 // asks the fzf instance listening on socketPath to reload its rows by
 // running `mt __mt_rows` again — porting the original bash do_ls's
-// `( while :; do sleep 1; curl ...; done ) &` background poller. The
-// goroutine runs until ctx is cancelled; StartReloadPoller itself returns
-// immediately. Callers control the goroutine's lifetime precisely around
-// their blocking Run call: call ctx's cancel func right after Run returns,
-// then call the returned wait func, before doing anything else with
-// runner (e.g. starting AttachOrRecreate's tmux calls). Cancelling ctx
-// only stops *future* ticks — a curl call already in flight when cancel
-// is called keeps running concurrently with whatever the caller does
-// next, racing on runner, unless the caller also waits for wait() to
-// return, which blocks until the goroutine (and any curl call it was
-// mid-flight on) has fully exited.
-func StartReloadPoller(ctx context.Context, runner executil.Runner, mtBinaryPath, socketPath string) (wait func()) {
+// `( while :; do sleep 1; curl ...; done ) &` background poller. Where
+// the original (and an earlier version of this port) shelled out to curl,
+// this dials socketPath directly as an HTTP client over a Unix socket:
+// fzf's --listen protocol is just a bare POST of the action string, which
+// doesn't need an external binary to speak. Because of that, this no
+// longer touches the executil.Runner at all, so — unlike when it shelled
+// out through the same Runner callers also use for tmux/fzf/etc — there
+// is nothing here left to race with whatever the caller does next.
+//
+// The goroutine runs until ctx is cancelled; StartReloadPoller itself
+// returns immediately. Cancelling ctx both stops future ticks and (via
+// the per-request context derived from it) aborts a request already in
+// flight; the returned wait func blocks until the goroutine has actually
+// exited, for callers that want a hard guarantee before moving on (e.g.
+// AttachOrRecreate's tmux calls) rather than relying on cancellation
+// alone.
+func StartReloadPoller(ctx context.Context, mtBinaryPath, socketPath string) (wait func()) {
 	done := make(chan struct{})
+
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
 
 	go func() {
 		defer close(done)
@@ -160,7 +159,13 @@ func StartReloadPoller(ctx context.Context, runner executil.Runner, mtBinaryPath
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _, _ = runner.Run("curl", "-s", "-o", "/dev/null", "--unix-socket", socketPath, "http", "-d", reloadData)
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/", strings.NewReader(reloadData))
+				if err != nil {
+					continue
+				}
+				if resp, err := client.Do(req); err == nil {
+					resp.Body.Close()
+				}
 			}
 		}
 	}()

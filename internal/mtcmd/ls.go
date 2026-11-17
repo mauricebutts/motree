@@ -238,18 +238,19 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	var waitForPoller func()
 	if listen {
-		waitForPoller = fzfutil.StartReloadPoller(ctx, runner, mtBinaryPath, socketPath)
+		waitForPoller = fzfutil.StartReloadPoller(ctx, mtBinaryPath, socketPath)
 	}
 
 	// cancel (and wait) is called explicitly right here, immediately after
 	// Run returns — not deferred to Ls's own return — so the poller's
 	// lifetime stays scoped tightly around the blocking Run call and
 	// never overlaps AttachOrRecreate's (possibly multi-call) rebuild of
-	// a dead session. Waiting (not just cancelling) matters: cancel only
-	// stops *future* poller ticks, so without waiting, a curl call
-	// already in flight when cancel fires could still be running
-	// concurrently with AttachOrRecreate's tmux calls against the same
-	// runner.
+	// a dead session. The poller no longer touches runner at all (it
+	// talks to fzf's --listen socket directly over HTTP), so there's
+	// nothing left here to race against AttachOrRecreate's tmux calls —
+	// waiting is just a hard guarantee the goroutine has actually exited
+	// before moving on, not a correctness requirement the way it was
+	// when the poller shelled out through the same runner.
 	selectedName, runErr := fzfutil.Run(runner, rows, args)
 	cancel()
 	if waitForPoller != nil {
@@ -269,8 +270,13 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 // --listen unix socket, matching the original bash do_ls's
 // `mktemp -u "${TMPDIR:-/tmp}/mt-fzf-XXXXXX").sock` — a name, not a file:
 // fzf creates/binds the socket itself, so the path must not already exist
-// when it starts.
-func newFzfSocketPath() (string, error) {
+// when it starts. A package-level var, like fzfLookPath above, so a test
+// that needs StartReloadPoller's real HTTP-over-Unix-socket requests to
+// land somewhere it's actually listening can override it to a known path
+// instead of this process-generated one.
+var newFzfSocketPath = defaultNewFzfSocketPath
+
+func defaultNewFzfSocketPath() (string, error) {
 	f, err := os.CreateTemp("", "mt-fzf-*")
 	if err != nil {
 		return "", err

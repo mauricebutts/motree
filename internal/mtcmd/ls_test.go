@@ -3,6 +3,8 @@ package mtcmd
 import (
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,7 +13,6 @@ import (
 	"time"
 
 	"github.com/mauricebutts/motree/internal/executil"
-	"github.com/mauricebutts/motree/internal/fzfutil"
 	"github.com/mauricebutts/motree/internal/state"
 	"github.com/mauricebutts/motree/internal/statusfile"
 )
@@ -42,17 +43,6 @@ func forceFzfAvailable(t *testing.T) {
 	orig := fzfLookPath
 	fzfLookPath = func(file string) (string, error) { return "/usr/local/bin/" + file, nil }
 	t.Cleanup(func() { fzfLookPath = orig })
-}
-
-// forceCurlAvailableForLs overrides fzfutil.CurlLookPath (exported for
-// exactly this cross-package purpose) so SupportsListen's curl check
-// deterministically succeeds, independent of whether curl actually
-// happens to be installed on whatever machine runs `go test`.
-func forceCurlAvailableForLs(t *testing.T) {
-	t.Helper()
-	orig := fzfutil.CurlLookPath
-	fzfutil.CurlLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
-	t.Cleanup(func() { fzfutil.CurlLookPath = orig })
 }
 
 // captureStderr runs fn with os.Stderr redirected, returning whatever it
@@ -421,23 +411,62 @@ func TestLs_NoFzfInstalled_FallsBackToPlainListing(t *testing.T) {
 
 // TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate is a regression
 // test for a bug where Ls stopped the reload poller via "defer cancel()",
-// so it kept firing curl against fzf's (already-exited) --listen socket
-// for the entire duration of AttachOrRecreate, not just around the
-// blocking fzfutil.Run call. It forces listen=true (fzf/curl both
-// "available", fzf --help reporting --listen support), makes the fzf
-// invocation itself (the "sh -c" call Run shells out through) block for
-// over a poller tick so the poller fires at least once, then makes
-// AttachOrRecreate's final "attach-session" tmux call also block for over
-// a poller tick. If the poller isn't cancelled until Ls returns (the old
-// bug), a curl call lands inside the attach-session window; if it's
-// cancelled right after Run returns (the fix), none does.
+// so it kept firing a reload request against fzf's (already-exited)
+// --listen socket for the entire duration of AttachOrRecreate, not just
+// around the blocking fzfutil.Run call. The poller talks to that socket
+// directly over HTTP (no curl, no executil.Runner involved — see
+// fzfutil.StartReloadPoller), so this test stands up a real Unix-socket
+// HTTP listener at a path it controls (overriding newFzfSocketPath) to
+// observe real requests landing, rather than intercepting a mocked
+// subprocess call. It forces listen=true (fzf "available", its --help
+// reporting --listen support), makes the fzf invocation itself (the
+// "sh -c" call Run shells out through) block for over a poller tick so
+// the poller fires at least once, then makes AttachOrRecreate's final
+// "attach-session" tmux call also block for over a poller tick. If the
+// poller isn't cancelled until Ls returns (the old bug), a reload request
+// lands inside the attach-session window; if it's cancelled right after
+// Run returns (the fix), none does.
 func TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate(t *testing.T) {
 	setStatusHome(t)
 	forceFzfAvailable(t)
-	forceCurlAvailableForLs(t)
+
+	// A short path under the OS temp root, not t.TempDir() (which nests
+	// under a directory named after the test function and routinely
+	// exceeds the ~104-byte sun_path limit on macOS).
+	socketFile, err := os.CreateTemp("", "mt-fzf-test-*.sock")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	socketPath := socketFile.Name()
+	socketFile.Close()
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatalf("os.Remove(%q): %v", socketPath, err)
+	}
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	origSocketPath := newFzfSocketPath
+	newFzfSocketPath = func() (string, error) { return socketPath, nil }
+	t.Cleanup(func() { newFzfSocketPath = origSocketPath })
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("net.Listen(unix, %q): %v", socketPath, err)
+	}
+	defer listener.Close()
 
 	var mu sync.Mutex
-	var curlTimes []time.Time
+	var reloadTimes []time.Time
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			reloadTimes = append(reloadTimes, time.Now())
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go server.Serve(listener)
+	defer server.Close()
+
 	var attachStart, attachEnd time.Time
 
 	tmuxRunner := &executil.FakeRunner{
@@ -451,11 +480,6 @@ func TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate(t *testing.T) {
 				// least once before the picker "returns" a selection.
 				time.Sleep(1200 * time.Millisecond)
 				return "myfeature\tsome label\tsome desc\n", "", nil
-			case "curl":
-				mu.Lock()
-				curlTimes = append(curlTimes, time.Now())
-				mu.Unlock()
-				return "", "", nil
 			case "tmux":
 				if len(call.Args) > 0 && call.Args[0] == "list-sessions" {
 					return "$3:myfeature\n", "", nil
@@ -490,12 +514,12 @@ func TestLs_ListenMode_PollerCancelledBeforeAttachOrRecreate(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(curlTimes) == 0 {
-		t.Fatalf("poller never fired a curl call — test didn't give it enough time to tick")
+	if len(reloadTimes) == 0 {
+		t.Fatalf("poller never fired a reload request — test didn't give it enough time to tick")
 	}
-	for _, ct := range curlTimes {
-		if ct.After(attachStart) && ct.Before(attachEnd) {
-			t.Errorf("poller fired a curl call at %v, inside AttachOrRecreate's attach-session window [%v, %v] — reload poller must be cancelled before AttachOrRecreate runs, not deferred to Ls's return", ct, attachStart, attachEnd)
+	for _, rt := range reloadTimes {
+		if rt.After(attachStart) && rt.Before(attachEnd) {
+			t.Errorf("poller fired a reload request at %v, inside AttachOrRecreate's attach-session window [%v, %v] — reload poller must be cancelled before AttachOrRecreate runs, not deferred to Ls's return", rt, attachStart, attachEnd)
 		}
 	}
 }
