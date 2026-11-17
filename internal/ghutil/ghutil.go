@@ -1,6 +1,5 @@
 // Package ghutil wraps the gh (GitHub CLI) subprocess calls needed for PR
-// worktree checkout, mirroring the original bash motree tool's do_pr gh
-// usage (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
+// worktree checkout (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
 package ghutil
 
 import (
@@ -34,10 +33,9 @@ func Available() bool {
 
 // PRHeadRef resolves prNumber's head branch name, running
 // "gh pr view <prNumber> --json headRefName --jq .headRefName" from
-// repoRoot. It returns "" (no error) on any failure or empty output,
-// mirroring the original bash tool's "... 2>/dev/null || true" pattern —
+// repoRoot. It returns "" (no error) on any failure or empty output —
 // callers can't distinguish "PR not found" from "gh/network failure", by
-// design, same as the bash version.
+// design.
 func (g GH) PRHeadRef(repoRoot, prNumber string) (string, error) {
 	stdout, err := g.runIn(repoRoot, "gh", "pr", "view", prNumber, "--json", "headRefName", "--jq", ".headRefName")
 	if err != nil {
@@ -61,8 +59,7 @@ func (g GH) Checkout(worktreePath, prNumber string) error {
 // "gh pr checkout" both just read the process's actual working directory
 // to figure out which repo/PR they're operating on. executil.Runner.Run
 // itself has no cwd parameter either (its signature is shared verbatim by
-// gitutil/tmux/ghutil, so it isn't ghutil's to change). So, same as the
-// original bash tool's own "(cd "$dir" && gh ...)" subshell, runIn
+// gitutil/tmux/ghutil, so it isn't ghutil's to change). So runIn
 // wraps the command in a "cd <dir> && ..." one-liner run via "sh -c" —
 // each argument POSIX-single-quote-escaped (via tmux.Quote, the same
 // escaping tmux's own send-keys commands rely on) so it survives

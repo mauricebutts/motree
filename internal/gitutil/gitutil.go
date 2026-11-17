@@ -1,6 +1,5 @@
 // Package gitutil wraps the git subprocess calls needed for worktree and
-// branch management, mirroring the behavior of the original bash motree
-// tool's git usage (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
+// branch management (see docs/superpowers/specs/2026-11-14-motree-go-design.md).
 package gitutil
 
 import (
@@ -16,9 +15,7 @@ type Git struct {
 }
 
 // RepoRoot resolves the top-level directory of the git repo containing cwd.
-// Returns "" (no error) if cwd is not inside a git repo, mirroring the
-// original bash tool's "git rev-parse --show-toplevel 2>/dev/null || true"
-// pattern.
+// Returns "" (no error) if cwd is not inside a git repo.
 func (g Git) RepoRoot(cwd string) (string, error) {
 	stdout, _, err := g.Runner.Run("git", "-C", cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -64,7 +61,7 @@ func (g Git) WorktreeAdd(repoRoot, worktreePath, branch string) error {
 // WorktreeAddNewBranch creates a new branch off baseRef in a new worktree at
 // worktreePath, then unsets the new branch's upstream tracking (so a stray
 // push can't go straight to the base ref). The unset-upstream step is
-// best-effort, matching the original bash tool's "|| true".
+// best-effort.
 func (g Git) WorktreeAddNewBranch(repoRoot, worktreePath, branch, baseRef string) error {
 	_, _, err := g.Runner.Run("git", "-C", repoRoot, "worktree", "add", "-b", branch, worktreePath, baseRef)
 	if err != nil {
@@ -88,8 +85,7 @@ func (g Git) WorktreePrune(repoRoot string) error {
 
 // WorktreeRemove removes the worktree at worktreePath. On failure, the
 // returned error's text contains git's actual stderr output, so callers
-// that print the error reproduce the original bash tool's visible-git-error
-// behavior.
+// that print the error show git's real failure reason.
 func (g Git) WorktreeRemove(repoRoot, worktreePath string) error {
 	_, stderr, err := g.Runner.Run("git", "-C", repoRoot, "worktree", "remove", worktreePath)
 	if err != nil {

@@ -24,12 +24,11 @@ import (
 var fzfLookPath = exec.LookPath
 
 // previewDivider separates a session's description from its claude pane
-// snapshot in Preview's output, matching the original bash motree.sh's
-// do_preview divider line exactly.
+// snapshot in Preview's output.
 const previewDivider = "----------------------------------------"
 
 // previewLines is the number of trailing claude-pane lines Preview
-// captures, matching the original bash do_preview's "tail -n 28".
+// captures.
 const previewLines = 28
 
 // statusEmoji maps each statusfile.Status to the glyph FormatLabel prefixes
@@ -41,9 +40,8 @@ var statusEmoji = map[statusfile.Status]string{
 	statusfile.Stopped:   "🛑",
 }
 
-// formatTimeForLabel formats a LastOpened Unix timestamp exactly as the
-// original bash mt_label_for's "date -r "$ts" '+%a %Y-%m-%d %H:%M'" did, in
-// local time.
+// formatTimeForLabel formats a LastOpened Unix timestamp as
+// "<abbreviated weekday> <YYYY-MM-DD> <HH:MM>" in local time.
 func formatTimeForLabel(lastOpened int64) string {
 	return time.Unix(lastOpened, 0).Format("Mon 2006-01-02 15:04")
 }
@@ -56,9 +54,9 @@ const noDescriptionPlaceholder = "(no description)"
 // SessionStatus aggregates a session's overall status from the status
 // files keyed by each of its repos' worktree paths (the hook writes status
 // files keyed by the claude pane's cwd, which for every session this tool
-// manages IS the worktree path). Priority, exact from the original bash
-// mt_session_status: waiting beats running beats subagents beats stopped.
-// found is false only when none of the repos has any status file at all.
+// manages IS the worktree path). Priority: waiting beats running beats
+// subagents beats stopped. found is false only when none of the repos has
+// any status file at all.
 func SessionStatus(repos []state.Repo) (status statusfile.Status, found bool) {
 	var anyWaiting, anyRunning, anySubagents, anyStopped bool
 
@@ -67,11 +65,11 @@ func SessionStatus(repos []state.Repo) (status statusfile.Status, found bool) {
 		if err != nil || !ok {
 			continue
 		}
-		// A top-level session currently blocked on its own Agent-tool call
-		// (agent_id "") is, by definition, managing a subagent right now —
-		// that takes priority over whatever status its last plain hook
-		// event wrote.
-		if inflight, _ := statusfile.HasSubagentInflight(repo.WorktreePath, ""); inflight {
+		// A session with any live subagent at all (at any nesting depth —
+		// there's no parent-agent link to tell them apart) is, by
+		// definition, currently managing one, which takes priority over
+		// whatever status its last plain hook event wrote.
+		if subs, _ := statusfile.ListSubagents(repo.WorktreePath); len(subs) > 0 {
 			s = statusfile.Subagents
 		}
 		switch s {
@@ -126,8 +124,8 @@ func SubagentLine(repos []state.Repo) (line string, found bool) {
 	return subagentIndent + strings.Join(emojis, " "), true
 }
 
-// FormatLabel renders the exact row label the original bash mt_label_for
-// produces: "<emoji> <name> | <Mon date> (<repos>) — <description>" (no
+// FormatLabel renders a session's row label:
+// "<emoji> <name> | <Mon date> (<repos>) — <description>" (no
 // trailing space after the name when there's no emoji), where the emoji,
 // date, and repo-list segments are each present only under the conditions
 // documented on their assembly below, and the description segment is
@@ -159,9 +157,13 @@ func FormatLabel(sess state.Session, status statusfile.Status, found bool) strin
 	return label
 }
 
-// RenderRows renders one "name\tlabel\tdesc" line per session in st, sorted
-// most- to least-recently-opened via state.SortedSessions, mirroring the
-// original bash mt_render_rows.
+// RenderRows renders one "name\tlabel\tdesc" row per session in st, sorted
+// most- to least-recently-opened via state.SortedSessions. When a session
+// has live subagents,
+// SubagentLine's emoji line is appended to label with an embedded "\n"
+// rather than becoming a separate row: fzf's multi-line item support
+// (see fzfutil.Run) renders that as a second visual line of the SAME
+// item, so it can never be independently arrow-keyed onto.
 func RenderRows(st *state.State) []string {
 	sessions := st.SortedSessions()
 	rows := make([]string, 0, len(sessions))
@@ -170,16 +172,16 @@ func RenderRows(st *state.State) []string {
 		status, found := SessionStatus(sess.Repos)
 		label := FormatLabel(sess, status, found)
 
+		if line, ok := SubagentLine(sess.Repos); ok {
+			label += "\n" + line
+		}
+
 		desc := sess.Description
 		if desc == "" {
 			desc = noDescriptionPlaceholder
 		}
 
 		rows = append(rows, sess.Name+"\t"+label+"\t"+desc)
-
-		if line, ok := SubagentLine(sess.Repos); ok {
-			rows = append(rows, sess.Name+"\t"+line+"\t"+desc)
-		}
 	}
 
 	return rows
@@ -232,12 +234,11 @@ func Preview(d *Deps, name string) string {
 
 // Ls is the full `mt ls` entrypoint: an fzf picker over tracked sessions,
 // optionally live-reloading its rows and preview, that attaches to (or
-// recreates) whichever session gets picked. Ported from the original bash
-// motree.sh's do_ls.
+// recreates) whichever session gets picked.
 //
 // cwd is accepted for interface symmetry with Create/PR/Spawn's
-// entrypoints; do_ls's own behavior never depended on the invoking
-// directory, so Ls doesn't use it.
+// entrypoints; Ls's own behavior never depends on the invoking directory,
+// so it isn't used here.
 func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 	if len(d.State.SortedSessions()) == 0 {
 		fmt.Fprintln(os.Stderr, "mt: no sessions tracked yet")
@@ -307,10 +308,9 @@ func Ls(d *Deps, mtBinaryPath, cwd string, insideTmux bool) error {
 }
 
 // newFzfSocketPath generates a unique, not-yet-existing path for fzf's
-// --listen unix socket, matching the original bash do_ls's
-// `mktemp -u "${TMPDIR:-/tmp}/mt-fzf-XXXXXX").sock` — a name, not a file:
-// fzf creates/binds the socket itself, so the path must not already exist
-// when it starts. A package-level var, like fzfLookPath above, so a test
+// --listen unix socket — a name, not a file: fzf creates/binds the socket
+// itself, so the path must not already exist when it starts. A
+// package-level var, like fzfLookPath above, so a test
 // that needs StartReloadPoller's real HTTP-over-Unix-socket requests to
 // land somewhere it's actually listening can override it to a known path
 // instead of this process-generated one.
@@ -334,11 +334,9 @@ func defaultNewFzfSocketPath() (string, error) {
 // AttachOrRecreate attaches to session name if its tmux session is still
 // live, or rebuilds it (the worktree directories already exist — this
 // just recreates the tmux session/windows/panes) otherwise, pruning any
-// repo whose worktree directory is gone from tracking as it goes. Ported
-// from the original bash motree.sh's mt_attach_or_recreate.
+// repo whose worktree directory is gone from tracking as it goes.
 //
-// now is stamped onto the session's LastOpened in BOTH branches (exactly
-// where bash's mt_attach_or_recreate calls mt_upsert_session), so that
+// now is stamped onto the session's LastOpened in BOTH branches, so that
 // picking a session out of `mt ls` actually floats it to the top of the
 // most-recently-opened ordering next time.
 func AttachOrRecreate(d *Deps, name string, insideTmux bool, now int64) error {

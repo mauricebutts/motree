@@ -69,7 +69,7 @@ func TestFindSessionID_NoTmuxServer_ReturnsEmptyNoError(t *testing.T) {
 
 	got, err := tm.FindSessionID("target")
 	if err != nil {
-		t.Fatalf("FindSessionID returned error: %v, want nil (swallowed, matching bash's 2>/dev/null)", err)
+		t.Fatalf("FindSessionID returned error: %v, want nil (a failed lookup is swallowed)", err)
 	}
 	if got != "" {
 		t.Errorf("FindSessionID(%q) = %q, want empty string", "target", got)

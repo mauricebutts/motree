@@ -15,10 +15,8 @@ import (
 // ensures a tmux session/window exists for it (via ensureSessionWindow,
 // which only splits the 3-pane layout and starts nvim when the window is
 // newly created), and — only in that newly-created case — starts claude in
-// the right-hand pane before attaching/switching to the session.
-//
-// This mirrors the original bash motree.sh's bottom "main" flow (the plain
-// `mt <name>` path, as opposed to `spawn`/`pr`).
+// the right-hand pane before attaching/switching to the session. This is
+// the plain `mt <name>` path, as opposed to `spawn`/`pr`.
 func Create(d *Deps, name, baseBranchFlag, description, cwd string, insideTmux bool, now int64) error {
 	repoRoot, err := d.Git.RepoRoot(cwd)
 	if err != nil {

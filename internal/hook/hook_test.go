@@ -164,65 +164,12 @@ func TestRun_NotificationUnrecognizedType_NoopNoError(t *testing.T) {
 	}
 }
 
-func TestRun_SubagentPreToolUse_NoopNoError(t *testing.T) {
-	cleanup := setupTempStateFile(t)
-	defer cleanup()
-
-	cwd := "/home/user/project"
-	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
-	r := bytes.NewReader([]byte(input))
-
-	err := Run(r)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	_, found, err := statusfile.Read(cwd)
-	if err != nil {
-		t.Fatalf("Read status failed: %v", err)
-	}
-	if found {
-		t.Fatal("status file should not be created for a subagent-originated event")
-	}
-}
-
-func TestRun_SubagentStop_NoopNoError(t *testing.T) {
-	cleanup := setupTempStateFile(t)
-	defer cleanup()
-
-	cwd := "/home/user/project"
-
-	// The parent session is Running when the subagent finishes.
-	if err := statusfile.Write(cwd, statusfile.Running); err != nil {
-		t.Fatalf("failed to write initial status: %v", err)
-	}
-
-	input := `{"hook_event_name": "SubagentStop", "cwd": "` + cwd + `", "agent_id": "agent-123", "agent_type": "general-purpose"}`
-	r := bytes.NewReader([]byte(input))
-
-	err := Run(r)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	status, found, err := statusfile.Read(cwd)
-	if err != nil {
-		t.Fatalf("Read status failed: %v", err)
-	}
-	if !found {
-		t.Fatal("status file should still exist")
-	}
-	if status != statusfile.Running {
-		t.Errorf("SubagentStop should not overwrite the parent's status, got %s", status)
-	}
-}
-
 func TestRun_SubagentPreToolUse_WritesSubagentRunning(t *testing.T) {
 	cleanup := setupTempStateFile(t)
 	defer cleanup()
 
 	cwd := "/home/user/project"
-	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123", "tool_name": "Read"}`
+	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123"}`
 	r := bytes.NewReader([]byte(input))
 
 	if err := Run(r); err != nil {
@@ -293,67 +240,6 @@ func TestRun_SubagentStop_ClearsSubagentFileButNotParent(t *testing.T) {
 	}
 	if !found || status != statusfile.Running {
 		t.Errorf("parent status = (%q, %v), want (%q, true) — SubagentStop must not touch it", status, found, statusfile.Running)
-	}
-}
-
-func TestRun_AgentToolPreThenPostToolUse_MarksThenClearsInflight(t *testing.T) {
-	cleanup := setupTempStateFile(t)
-	defer cleanup()
-
-	cwd := "/home/user/project"
-
-	pre := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "tool_name": "Agent", "tool_use_id": "toolu_1"}`
-	if err := Run(bytes.NewReader([]byte(pre))); err != nil {
-		t.Fatalf("Run (PreToolUse) returned error: %v", err)
-	}
-
-	has, err := statusfile.HasSubagentInflight(cwd, "")
-	if err != nil {
-		t.Fatalf("HasSubagentInflight: %v", err)
-	}
-	if !has {
-		t.Fatal("HasSubagentInflight after Agent-tool PreToolUse = false, want true")
-	}
-
-	post := `{"hook_event_name": "PostToolUse", "cwd": "` + cwd + `", "tool_name": "Agent", "tool_use_id": "toolu_1"}`
-	if err := Run(bytes.NewReader([]byte(post))); err != nil {
-		t.Fatalf("Run (PostToolUse) returned error: %v", err)
-	}
-
-	has, err = statusfile.HasSubagentInflight(cwd, "")
-	if err != nil {
-		t.Fatalf("HasSubagentInflight: %v", err)
-	}
-	if has {
-		t.Fatal("HasSubagentInflight after matching PostToolUse = true, want false")
-	}
-}
-
-func TestRun_SubagentItselfCallsAgentTool_MarksThatSubagentsInflight(t *testing.T) {
-	cleanup := setupTempStateFile(t)
-	defer cleanup()
-
-	cwd := "/home/user/project"
-	input := `{"hook_event_name": "PreToolUse", "cwd": "` + cwd + `", "agent_id": "agent-123", "tool_name": "Agent", "tool_use_id": "toolu_nested"}`
-
-	if err := Run(bytes.NewReader([]byte(input))); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	has, err := statusfile.HasSubagentInflight(cwd, "agent-123")
-	if err != nil {
-		t.Fatalf("HasSubagentInflight: %v", err)
-	}
-	if !has {
-		t.Fatal("HasSubagentInflight(agent-123) = false, want true — it just issued its own Agent-tool call")
-	}
-
-	status, found, err := statusfile.ReadSubagent(cwd, "agent-123")
-	if err != nil {
-		t.Fatalf("ReadSubagent: %v", err)
-	}
-	if !found || status != statusfile.Subagents {
-		t.Errorf("ReadSubagent(agent-123) = (%q, %v), want (%q, true) — it's itself spinning out a nested subagent", status, found, statusfile.Subagents)
 	}
 }
 

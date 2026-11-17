@@ -18,9 +18,8 @@ import (
 // never attaches or switches the tmux client, so several can be spawned in
 // a row without taking over the terminal.
 //
-// This mirrors the original bash motree.sh's do_spawn, including its
-// duplication (rather than sharing a helper) of the worktree/branch
-// creation sequence also found in Create's do_spawn-equivalent main flow.
+// Spawn duplicates (rather than sharing a helper for) the worktree/branch
+// creation sequence also found in Create.
 func Spawn(d *Deps, name, prompt, baseBranchFlag, description, cwd string, now int64) error {
 	sessionID, err := d.Tmux.FindSessionID(name)
 	if err != nil {

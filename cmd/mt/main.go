@@ -21,10 +21,9 @@ import (
 )
 
 // errUsageShown is a sentinel returned by runCreate/runSpawn/runPR when
-// they've already printed a usage message to stderr themselves (mirroring
-// the original bash tool's usage()-then-exit-1 pattern) — main's dispatch
-// checks for it so it doesn't also print a redundant "mt: usage shown"
-// line via its normal "mt: %v" error-printing path.
+// they've already printed a usage message to stderr themselves — main's
+// dispatch checks for it so it doesn't also print a redundant "mt: usage
+// shown" line via its normal "mt: %v" error-printing path.
 var errUsageShown = errors.New("usage shown")
 
 func main() {
@@ -104,9 +103,7 @@ func main() {
 	case "help", "-h", "--help":
 		printHelp()
 	default:
-		// Not a recognized subcommand — the original bash tool's own
-		// dispatch (a case statement over the same fixed list above, falling
-		// through to its bottom "main" flow) treats anything else as the
+		// Not a recognized subcommand — anything else is treated as the
 		// bare `mt <name> [-b <base-branch>] [-d <description>]` form, so
 		// os.Args[1] here is the session name, not a typo'd subcommand.
 		if err := runCreate(os.Args[1:]); err != nil {
@@ -118,9 +115,9 @@ func main() {
 // reportAndExit prints err and exits 1, skipping the print for the two
 // sentinels that mean "the callee already printed this itself":
 // errUsageShown (it wrote usage() to stderr) and mtcmd.ErrNoPRFound
-// (`mt pr` echoed the bash-compatible "no pr found" line to stdout).
-// Shared by the create/spawn/pr dispatch branches above, the only ones
-// that produce them.
+// (`mt pr` echoed its own "no pr found" line to stdout). Shared by the
+// create/spawn/pr dispatch branches above, the only ones that produce
+// them.
 func reportAndExit(err error) {
 	if err != errUsageShown && !errors.Is(err, mtcmd.ErrNoPRFound) {
 		fmt.Fprintf(os.Stderr, "mt: %v\n", err)
@@ -128,15 +125,12 @@ func reportAndExit(err error) {
 	os.Exit(1)
 }
 
-// usage prints the one-line usage summary, matching the original bash
-// tool's usage() (ported to the "mt" binary name).
+// usage prints the one-line usage summary.
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage: mt <name> [-b <base-branch>] [-d <description>] | mt spawn <name> "<prompt>" [-b <base-branch>] [-d <description>] | mt pr <pr_number> | mt ls | mt rm [--self] | mt cmd`)
 }
 
-// printHelp prints mt's static help text, matching the original bash
-// tool's do_help verbatim for every subcommand it has, plus a section for
-// install-hooks, which only exists in this Go port.
+// printHelp prints mt's static help text for every subcommand.
 func printHelp() {
 	fmt.Print(`mt <name> [-b <base-branch>] [-d <description>]
     Create or expand a named session: a git worktree paired with a tmux
@@ -191,15 +185,21 @@ func newDeps() (*mtcmd.Deps, error) {
 	}, nil
 }
 
-// runRows prints one "name\tlabel\tdesc" line per tracked session, sorted
-// most- to least-recently-opened, for the fzf picker to consume.
+// runRows prints one NUL-terminated "name\tlabel\tdesc" record per tracked
+// session, sorted most- to least-recently-opened, for fzf's live-reload
+// `reload(mt __mt_rows)` binding to consume. It must match the --read0
+// framing fzf itself is launched with (see fzfutil.BuildArgs/Run) — a
+// plain newline per row would merge every session into a single record
+// the instant a reload fires, since a row's label can itself contain a
+// literal "\n" (the subagent-status line) with no other record separator
+// in the stream.
 func runRows() error {
 	d, err := newDeps()
 	if err != nil {
 		return err
 	}
 	for _, row := range mtcmd.RenderRows(d.State) {
-		fmt.Println(row)
+		fmt.Print(row + "\x00")
 	}
 	return nil
 }
@@ -421,9 +421,7 @@ func runSpawn(args []string) error {
 	}
 
 	// Unlike Create/PR, Spawn never attaches — so without this, a
-	// successful spawn gives the user no feedback at all. Matches the
-	// original bash do_spawn's trailing "echo \"mt: spawned session
-	// '$name'\"".
+	// successful spawn gives the user no feedback at all.
 	fmt.Printf("mt: spawned session '%s'\n", name)
 	return nil
 }

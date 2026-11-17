@@ -12,8 +12,7 @@ import (
 	"github.com/mauricebutts/motree/internal/state"
 )
 
-// rmFzfArgs builds `mt rm`'s fzf argv, ported directly from the original
-// bash do_rm's fzf invocation:
+// rmFzfArgs builds `mt rm`'s fzf argv:
 //
 //	fzf --delimiter='\t' --with-nth=2 --height=~40% --reverse --prompt='remove> ' --preview='echo {3}' --preview-window=down,3,wrap
 //
@@ -35,12 +34,11 @@ func rmFzfArgs() []string {
 
 // Rm is the full `mt rm` entrypoint: an fzf picker over tracked sessions
 // that, on selection, removes that session entirely (worktrees, branches,
-// tmux session, and state). Ported from the original bash motree.sh's
-// do_rm.
+// tmux session, and state).
 //
 // cwd is accepted for interface symmetry with Create/PR/Spawn/Ls's
-// entrypoints; do_rm's own behavior never depended on the invoking
-// directory, so Rm doesn't use it.
+// entrypoints; Rm's own behavior never depends on the invoking directory,
+// so it isn't used here.
 func Rm(d *Deps, cwd string) error {
 	if len(d.State.SortedSessions()) == 0 {
 		fmt.Fprintln(os.Stderr, "mt: no sessions tracked yet")
@@ -51,10 +49,9 @@ func Rm(d *Deps, cwd string) error {
 		// Unlike the "no sessions tracked yet" branch above (which prints
 		// directly and returns nil, since mt ls's equivalent case has no
 		// error to report), this path must surface a non-nil error so the
-		// caller exits non-zero — matching the original bash do_rm's
-		// `return 1`. main.go's dispatch prints every returned error via
-		// "mt: %v", so the message is returned, not also printed here
-		// directly: printing it both ways would put the same line on
+		// caller exits non-zero. main.go's dispatch prints every returned
+		// error via "mt: %v", so the message is returned, not also printed
+		// here directly: printing it both ways would put the same line on
 		// stderr twice.
 		return errors.New("mt rm needs fzf installed to pick a session.")
 	}
@@ -74,8 +71,7 @@ func Rm(d *Deps, cwd string) error {
 
 // RemoveSession removes session name entirely: every repo's worktree, then
 // (best-effort) its branch, then its state row (persisted immediately),
-// and only then its tmux session if one is running. Ported from the
-// original bash motree.sh's mt_remove, step order included.
+// and only then its tmux session if one is running.
 //
 // Worktree removal runs as a first pass over every repo before anything
 // else is touched: if ANY repo's worktree fails to remove, the real git
@@ -84,7 +80,7 @@ func Rm(d *Deps, cwd string) error {
 // worktree directory is already gone (removed by hand, or by an earlier
 // partial failure) is skipped rather than handed to `git worktree remove`,
 // which would only fail with "is not a working tree" and wedge the whole
-// removal — the same `[ -d "$worktree_path" ]` guard bash has.
+// removal.
 func RemoveSession(d *Deps, name string) error {
 	repos := d.State.ReposFor(name)
 	if len(repos) == 0 {
@@ -106,7 +102,7 @@ func RemoveSession(d *Deps, name string) error {
 	}
 
 	for _, repo := range repos {
-		_ = d.Git.BranchDelete(repo.RepoPath, name) // best-effort, matches bash's "|| true"
+		_ = d.Git.BranchDelete(repo.RepoPath, name) // best-effort
 	}
 
 	// State is dropped AND flushed to disk here, before the kill-session
@@ -116,8 +112,7 @@ func RemoveSession(d *Deps, name string) error {
 	// that pane down and can SIGHUP us mid-execution; anything not already
 	// on disk at that point is lost, which would leave the worktree and
 	// branch deleted but the state row alive forever — and, with the
-	// worktree directory now missing, unremovable on a retry. Bash carries
-	// a comment on this exact hazard above its own kill-session.
+	// worktree directory now missing, unremovable on a retry.
 	d.State.RemoveSession(name)
 	if err := d.State.Save(state.StateFilePath()); err != nil {
 		return err
@@ -138,8 +133,7 @@ func RemoveSession(d *Deps, name string) error {
 }
 
 // RmSelf implements `mt rm --self`: removes the session the caller is
-// currently attached to, after a y/N confirmation read from stdin. Ported
-// from the original bash do_rm's "--self" branch.
+// currently attached to, after a y/N confirmation read from stdin.
 //
 // stdin/stdout are parameters (not os.Stdin/os.Stdout directly) so tests
 // can feed/capture them.

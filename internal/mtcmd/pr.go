@@ -11,21 +11,20 @@ import (
 	"github.com/mauricebutts/motree/internal/tmux"
 )
 
-// prNumberPattern validates that a PR argument is digits only, mirroring
-// the original bash tool's case-statement digits-only check.
+// prNumberPattern validates that a PR argument is digits only.
 var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 
 // prExplainPrompt is the fixed prompt sent into the claude pane when a PR
-// review session's window is newly created. Copied verbatim from the
-// original bash tool, including its "it's" (not "its") — do not "fix" it.
+// review session's window is newly created. Note the "it's" (not "its")
+// — a deliberately preserved typo, not a mistake to "fix".
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
 // ErrNoPRFound is the sentinel PR returns after it has already printed
-// "no pr found" to stdout itself (the original bash do_pr echoes that exact
-// line, then returns 1). It exists for the same reason cmd/mt/main.go's own
-// errUsageShown does: main's dispatch prints every other returned error via
-// "mt: %v", which would put a second line on the screen for this one event.
-// main checks for this sentinel and exits 1 silently instead.
+// "no pr found" to stdout itself. It exists for the same reason
+// cmd/mt/main.go's own errUsageShown does: main's dispatch prints every
+// other returned error via "mt: %v", which would put a second line on the
+// screen for this one event. main checks for this sentinel and exits 1
+// silently instead.
 var ErrNoPRFound = errors.New("no pr found")
 
 // PR checks prNumber out into its own "pr-<prNumber>" session/worktree for

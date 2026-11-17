@@ -15,8 +15,8 @@ import (
 
 // existingWorktree creates (and returns) a real directory to stand in for a
 // session's worktree. RemoveSession guards `git worktree remove` behind an
-// os.Stat check — the same `[ -d "$worktree_path" ]` guard bash has — so a
-// fixture that wants the removal attempted must actually exist on disk.
+// os.Stat check, so a fixture that wants the removal attempted must
+// actually exist on disk.
 func existingWorktree(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
@@ -159,9 +159,9 @@ func TestRemoveSession_HappyPath_RemovesWorktreesBranchSessionAndState(t *testin
 	}
 }
 
-// TestRemoveSession_PersistsStateBeforeKillingTmuxSession pins the ordering
-// hazard bash carries an explicit comment about: killing the tmux session
-// can SIGHUP the very `mt rm` process doing the killing (you picked your
+// TestRemoveSession_PersistsStateBeforeKillingTmuxSession pins an ordering
+// hazard: killing the tmux session can SIGHUP the very `mt rm` process
+// doing the killing (you picked your
 // own session out of the picker), so the state row must already be off disk
 // before kill-session runs. Otherwise the worktree and branch are gone but
 // the row survives forever — and, with its worktree directory now missing,
@@ -242,7 +242,7 @@ func TestRemoveSession_WorktreeDirectoryAlreadyGone_SkipsGitAndStillRemoves(t *t
 	}
 
 	// Only the repo whose directory still exists gets a worktree remove;
-	// both still get the best-effort branch delete, as in bash.
+	// both still get the best-effort branch delete.
 	wantGitCalls := []executil.Call{
 		{Name: "git", Args: []string{"-C", "/repo/present", "worktree", "remove", presentWorktree}},
 		{Name: "git", Args: []string{"-C", "/repo/gone", "branch", "-d", "myfeature"}},
@@ -474,7 +474,7 @@ func TestRm_HappyPath_PicksAndRemovesSelectedSession(t *testing.T) {
 
 	wantFzfPrefix := `'fzf' '--delimiter=\t' '--with-nth=2' '--height=~40%' '--reverse' '--prompt=remove> ' '--preview=echo {3}' '--preview-window=down,3,wrap' < '`
 	if !strings.HasPrefix(fzfScript, wantFzfPrefix) {
-		t.Errorf("fzf script = %q, want prefix %q (mt rm's fzf invocation, ported from bash do_rm)", fzfScript, wantFzfPrefix)
+		t.Errorf("fzf script = %q, want prefix %q (mt rm's fzf invocation)", fzfScript, wantFzfPrefix)
 	}
 
 	wantTmuxCalls := []executil.Call{
