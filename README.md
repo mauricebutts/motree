@@ -6,51 +6,65 @@ the original `~/Util/motree.sh` bash script, kept behavior-compatible (see
 `docs/superpowers/specs/2026-11-14-motree-go-design.md` for the full design
 and `docs/superpowers/plans/2026-11-15-motree-go.md` for the build plan).
 
-## Build
+## Setup
 
-Requires Go (developed against 1.27).
+Requires Go (developed against 1.27), plus `git`, `tmux`, and `fzf` on
+`PATH` (`gh` too if you want `mt pr`).
 
-```
-make build    # builds ./mt
-make test     # go test ./...
-make install  # builds, then copies ./mt to ~/Util/mt-go
-```
+1. **Build it:**
 
-`make install` never touches the existing bash tool (`~/Util/motree.sh`) or
-the `mt` alias in `.zshrc` — switching the real `mt` alias over to this
-binary is a deliberate, separate step you take once you trust it, not
-something this build does automatically.
+   ```
+   make build    # builds ./mt
+   make test     # go test ./...
+   make install  # builds, then copies ./mt to ~/Util/mt-go
+   ```
 
-## State file: `MOTREE_STATE_FILE`
+   `make install` never touches the existing bash tool (`~/Util/motree.sh`)
+   or the `mt` alias in `.zshrc` — switching the real `mt` alias over to
+   this binary is a deliberate, separate step you take once you trust it,
+   not something this build does automatically.
 
-`mt` tracks sessions/repos in a single JSON file. By default that's
-`~/.motree` — the same location (in spirit) the bash tool used.
+2. **Point it at a state file, in your shell startup file — not ad-hoc per
+   terminal:**
 
-Set `MOTREE_STATE_FILE` to point `mt` at a different file instead. This
-project's own day-to-day development runs against `~/.motree-dev`, so it
-never touches your real session state:
+   ```
+   echo 'export MOTREE_STATE_FILE=~/.motree-dev' >> ~/.zshrc
+   ```
 
-```
-export MOTREE_STATE_FILE=~/.motree-dev
-```
+   then open a **new** terminal so it takes effect. `mt` tracks
+   sessions/repos in a single JSON file; by default that's `~/.motree` (the
+   same location, in spirit, the bash tool used). `MOTREE_STATE_FILE` lets
+   you point it somewhere else instead — this project's own day-to-day
+   development runs against `~/.motree-dev`, so it never touches your real
+   session state while you're trying this out.
 
-Unset (or unset in `.zshrc`) once you're ready for `mt` to manage your real
-`~/.motree`.
+   **Why your shell startup file and not just `export` in one terminal:**
+   the status-detection hook (next step) runs as a child process of
+   whatever `claude` process spawned it — it inherits *that* process's
+   environment, not the environment of whatever terminal you happen to run
+   `mt ls` in. If `MOTREE_STATE_FILE` is only set in one terminal, `mt ls`
+   there will look in `~/.motree-dev-status/` while the hook (launched from
+   some other shell) writes to `~/.motree-status/` instead — so `mt ls`
+   never sees a status, with no error anywhere to tell you why. Setting it
+   in `.zshrc` means every new shell — and so every `claude` process
+   launched from one — picks it up the same way.
 
-## One-time setup: `mt install-hooks`
+   Remove the line (or point it at `~/.motree`) once you're ready for `mt`
+   to manage your real session state.
 
-`mt ls`/`mt rm` show each session's live status (waiting / running /
-subagents / stopped) by reading a status file that Claude Code writes via a
-hook, rather than scraping pane text. Run this once per machine so Claude
-Code knows to call `mt __hook`:
+3. **Run `mt install-hooks` once per machine:**
 
-```
-mt install-hooks
-```
+   ```
+   mt install-hooks
+   ```
 
-This merges an entry into your global `~/.claude/settings.json`,
-additively — any existing hook entries (e.g. for other tools) are left
-alone.
+   `mt ls`/`mt rm` show each session's live status (waiting / running /
+   subagents / stopped) by reading a status file that Claude Code writes via
+   a hook, rather than scraping pane text the way the bash original did.
+   This step registers `mt __hook` with Claude Code by merging an entry into
+   your global `~/.claude/settings.json`, additively — any existing hook
+   entries (e.g. for other tools) are left alone. Without this step, `mt ls`
+   still works, just without the live status emoji.
 
 ## Usage
 
