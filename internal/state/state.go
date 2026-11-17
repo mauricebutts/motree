@@ -144,6 +144,16 @@ func (s *State) RemoveRepo(sessionName, repoPath string) {
 	}
 }
 
+// IsTracked reports whether name is a tracked session.
+func (s *State) IsTracked(name string) bool {
+	for _, sess := range s.Sessions {
+		if sess.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *State) RemoveSession(name string) {
 	for i, sess := range s.Sessions {
 		if sess.Name == name {

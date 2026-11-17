@@ -1,9 +1,12 @@
 package mtcmd
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/mauricebutts/motree/internal/fzfutil"
 	"github.com/mauricebutts/motree/internal/state"
@@ -131,5 +134,40 @@ func RemoveSession(d *Deps, name string) error {
 		}
 	}
 
+	return nil
+}
+
+// RmSelf implements `mt rm --self`: removes the session the caller is
+// currently attached to, after a y/N confirmation read from stdin. Ported
+// from the original bash do_rm's "--self" branch.
+//
+// stdin/stdout are parameters (not os.Stdin/os.Stdout directly) so tests
+// can feed/capture them.
+func RmSelf(d *Deps, stdin io.Reader, stdout io.Writer) error {
+	if os.Getenv("TMUX") == "" {
+		return errors.New("rm --self must be run from inside a tmux session")
+	}
+
+	name, err := d.Tmux.DisplayMessageCurrent("#S")
+	if err != nil {
+		return err
+	}
+
+	if !d.State.IsTracked(name) {
+		return fmt.Errorf("current session '%s' isn't tracked by mt", name)
+	}
+
+	fmt.Fprintf(stdout, "Remove session '%s' and its worktree(s)? [y/N] ", name)
+	answer, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return err
+	}
+	answer = strings.TrimSpace(answer)
+
+	if len(answer) > 0 && (answer[0] == 'y' || answer[0] == 'Y') {
+		return RemoveSession(d, name)
+	}
+
+	fmt.Fprintln(stdout, "mt: cancelled")
 	return nil
 }

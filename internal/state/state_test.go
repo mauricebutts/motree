@@ -301,3 +301,21 @@ func TestRemoveSession(t *testing.T) {
 		t.Errorf("remaining session name = %q, want %q", s.Sessions[0].Name, "session2")
 	}
 }
+
+func TestIsTracked_TrueForExistingSession(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("session1", "desc1", 100)
+
+	if !s.IsTracked("session1") {
+		t.Errorf("IsTracked(%q) = false, want true", "session1")
+	}
+}
+
+func TestIsTracked_FalseForUnknownSession(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("session1", "desc1", 100)
+
+	if s.IsTracked("nonexistent") {
+		t.Errorf("IsTracked(%q) = true, want false", "nonexistent")
+	}
+}

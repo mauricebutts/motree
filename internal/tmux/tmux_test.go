@@ -352,3 +352,357 @@ func TestAttachOrSwitch_AttachSessionErrorPropagates(t *testing.T) {
 		t.Errorf("AttachOrSwitch error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestDisplayMessage_ReturnsTrimmedStdout(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Stdout: "/dev/ttys003\n"}}}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.DisplayMessage("$3:cmd.1", "#{pane_tty}")
+	if err != nil {
+		t.Fatalf("DisplayMessage returned error: %v", err)
+	}
+	if got != "/dev/ttys003" {
+		t.Errorf("DisplayMessage() = %q, want %q", got, "/dev/ttys003")
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "-t", "$3:cmd.1", "#{pane_tty}"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestDisplayMessageCurrent_NoDashT(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Stdout: "myname\n"}}}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.DisplayMessageCurrent("#S")
+	if err != nil {
+		t.Fatalf("DisplayMessageCurrent returned error: %v", err)
+	}
+	if got != "myname" {
+		t.Errorf("DisplayMessageCurrent() = %q, want %q", got, "myname")
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "#S"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestShowMessage_NoDashP(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ShowMessage("$3:cmd.1", "mt cmd: no claude pane running for 'foo'"); err != nil {
+		t.Fatalf("ShowMessage returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-t", "$3:cmd.1", "mt cmd: no claude pane running for 'foo'"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestSplitRightPane_BuildsExpectedArgv(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.SplitRightPane("$3:cmd", "/home/user", 70); err != nil {
+		t.Fatalf("SplitRightPane returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"split-window", "-h", "-p", "70", "-t", "$3:cmd", "-c", "/home/user"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestSessionOption_ReturnsEmptyStringWhenUnset(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Stdout: "\n"}}}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.SessionOption("$3", "@mt_cmd_docked")
+	if err != nil {
+		t.Fatalf("SessionOption returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("SessionOption() = %q, want empty string", got)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"show-option", "-t", "$3", "-v", "@mt_cmd_docked"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestSetSessionOption_BuildsExpectedArgv(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.SetSessionOption("$3", "@mt_cmd_docked", "feature-x"); err != nil {
+		t.Fatalf("SetSessionOption returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"set-option", "-t", "$3", "@mt_cmd_docked", "feature-x"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestListClientSessions_ParsesTtySessionIDPairs(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "/dev/ttys001 $2\n/dev/ttys003 $5\n"}},
+	}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.ListClientSessions()
+	if err != nil {
+		t.Fatalf("ListClientSessions returned error: %v", err)
+	}
+	want := map[string]string{"/dev/ttys001": "$2", "/dev/ttys003": "$5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListClientSessions() = %+v, want %+v", got, want)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"list-clients", "-F", "#{client_tty} #{session_id}"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestListClientSessions_EmptyOnNoClients(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Err: errors.New("no server running")}},
+	}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.ListClientSessions()
+	if err != nil {
+		t.Fatalf("ListClientSessions returned error: %v, want nil (swallowed)", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListClientSessions() = %+v, want empty map", got)
+	}
+}
+
+func TestSwitchClientTo_BuildsExpectedArgv(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.SwitchClientTo("/dev/ttys003", "$5"); err != nil {
+		t.Fatalf("SwitchClientTo returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"switch-client", "-c", "/dev/ttys003", "-t", "$5"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestSelectWindow_BuildsExpectedArgv(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.SelectWindow("$3:cmd"); err != nil {
+		t.Fatalf("SelectWindow returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"select-window", "-t", "$3:cmd"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestSelectPane_BuildsExpectedArgv(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{}}}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.SelectPane("$3:cmd.1"); err != nil {
+		t.Fatalf("SelectPane returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"select-pane", "-t", "$3:cmd.1"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestPanePID_ParsesMatchingIndex(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "0 1234\n1 5678\n"}},
+	}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.PanePID("$7:cmd.0")
+	if err != nil {
+		t.Fatalf("PanePID returned error: %v", err)
+	}
+	if got != "1234" {
+		t.Errorf("PanePID() = %q, want %q", got, "1234")
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"list-panes", "-t", "$7:cmd", "-F", "#{pane_index} #{pane_pid}"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestPanePID_NoMatch_ReturnsEmpty(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "1 5678\n"}},
+	}
+	tm := Tmux{Runner: fake}
+
+	got, err := tm.PanePID("$7:cmd.0")
+	if err != nil {
+		t.Fatalf("PanePID returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("PanePID() = %q, want empty string", got)
+	}
+}
+
+func TestHasChildProcess_TrueOnZeroExit(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Stdout: "5678\n"}}}
+	tm := Tmux{Runner: fake}
+
+	if got := tm.HasChildProcess("1234"); !got {
+		t.Errorf("HasChildProcess() = false, want true")
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "pgrep", Args: []string{"-P", "1234"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHasChildProcess_FalseOnError(t *testing.T) {
+	fake := &executil.FakeRunner{Queue: []executil.Response{{Err: errors.New("exit status 1")}}}
+	tm := Tmux{Runner: fake}
+
+	if got := tm.HasChildProcess("1234"); got {
+		t.Errorf("HasChildProcess() = true, want false")
+	}
+}
+
+func TestZoomOff_TogglesOnlyWhenFlagIsOne(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "1\n"}, {}},
+	}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOff("$3:cmd"); err != nil {
+		t.Fatalf("ZoomOff returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "-t", "$3:cmd", "#{window_zoomed_flag}"}},
+		{Name: "tmux", Args: []string{"resize-pane", "-Z", "-t", "$3:cmd"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestZoomOff_NoopWhenFlagIsZero(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "0\n"}},
+	}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOff("$3:cmd"); err != nil {
+		t.Fatalf("ZoomOff returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "-t", "$3:cmd", "#{window_zoomed_flag}"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v (no resize-pane call)", fake.Calls, wantCalls)
+	}
+}
+
+func TestZoomOn_TogglesOnlyWhenFlagIsZero(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "0\n"}, {}},
+	}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOn("$3:cmd"); err != nil {
+		t.Fatalf("ZoomOn returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "-t", "$3:cmd", "#{window_zoomed_flag}"}},
+		{Name: "tmux", Args: []string{"resize-pane", "-Z", "-t", "$3:cmd"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, wantCalls)
+	}
+}
+
+func TestZoomOn_NoopWhenFlagIsOne(t *testing.T) {
+	fake := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: "1\n"}},
+	}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOn("$3:cmd"); err != nil {
+		t.Fatalf("ZoomOn returned error: %v", err)
+	}
+
+	wantCalls := []executil.Call{
+		{Name: "tmux", Args: []string{"display-message", "-p", "-t", "$3:cmd", "#{window_zoomed_flag}"}},
+	}
+	if !reflect.DeepEqual(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %+v, want %+v (no resize-pane call)", fake.Calls, wantCalls)
+	}
+}
+
+func TestZoomOff_NoopOnEmptyTarget(t *testing.T) {
+	fake := &executil.FakeRunner{}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOff(""); err != nil {
+		t.Fatalf("ZoomOff returned error: %v", err)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("Calls = %+v, want none", fake.Calls)
+	}
+}
+
+func TestZoomOn_NoopOnEmptyTarget(t *testing.T) {
+	fake := &executil.FakeRunner{}
+	tm := Tmux{Runner: fake}
+
+	if err := tm.ZoomOn(""); err != nil {
+		t.Fatalf("ZoomOn returned error: %v", err)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("Calls = %+v, want none", fake.Calls)
+	}
+}

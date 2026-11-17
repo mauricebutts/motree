@@ -182,3 +182,192 @@ func (t Tmux) AttachOrSwitch(sessionID string, insideTmux bool) error {
 	}
 	return t.Runner.RunInteractive("tmux", "attach-session", "-t", sessionID)
 }
+
+// DisplayMessage runs "tmux display-message -p -t <target> <format>" and
+// returns its trimmed stdout — used for #{pane_tty} and
+// #{window_zoomed_flag} queries against a specific pane/window.
+func (t Tmux) DisplayMessage(target, format string) (string, error) {
+	stdout, _, err := t.Runner.Run("tmux", "display-message", "-p", "-t", target, format)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// DisplayMessageCurrent runs "tmux display-message -p <format>" with no
+// "-t", i.e. against whichever session/pane this process is attached to —
+// used for `mt rm --self`'s current-session-name lookup ("#S"). Kept
+// separate from DisplayMessage (rather than letting target be empty there)
+// so an accidentally-empty target elsewhere is a visible bug, not a
+// silently-valid untargeted query.
+func (t Tmux) DisplayMessageCurrent(format string) (string, error) {
+	stdout, _, err := t.Runner.Run("tmux", "display-message", "-p", format)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// ShowMessage runs "tmux display-message -t <target> <text>" (no "-p"),
+// surfacing text as tmux's own status-line message in target's pane —
+// used by Dock's two "nothing to show" cases.
+func (t Tmux) ShowMessage(target, text string) error {
+	_, _, err := t.Runner.Run("tmux", "display-message", "-t", target, text)
+	return err
+}
+
+// SplitRightPane runs "tmux split-window -h -p <percent> -t <windowTarget>
+// -c <cwd>": a generic two-pane horizontal split, unlike the hard-coded
+// 3-pane SplitThreePane above. Used to build the command center's
+// picker/mirror pane pair.
+func (t Tmux) SplitRightPane(windowTarget, cwd string, percent int) error {
+	_, _, err := t.Runner.Run("tmux", "split-window", "-h", "-p", strconv.Itoa(percent), "-t", windowTarget, "-c", cwd)
+	return err
+}
+
+// SessionOption runs "tmux show-option -t <sessionID> -v <name>" and
+// returns its trimmed stdout, which is empty (not an error) when the
+// option is unset.
+func (t Tmux) SessionOption(sessionID, name string) (string, error) {
+	stdout, _, err := t.Runner.Run("tmux", "show-option", "-t", sessionID, "-v", name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// SetSessionOption runs "tmux set-option -t <sessionID> <name> <value>".
+func (t Tmux) SetSessionOption(sessionID, name, value string) error {
+	_, _, err := t.Runner.Run("tmux", "set-option", "-t", sessionID, name, value)
+	return err
+}
+
+// ListClientSessions runs "tmux list-clients -F '#{client_tty}
+// #{session_id}'" and returns a tty->sessionID map. Returns an empty map
+// (never an error) when there are no clients, or no tmux server at all —
+// the same "degrade to empty" convention FindSessionID already uses.
+func (t Tmux) ListClientSessions() (map[string]string, error) {
+	result := map[string]string{}
+	stdout, _, err := t.Runner.Run("tmux", "list-clients", "-F", "#{client_tty} #{session_id}")
+	if err != nil {
+		return result, nil
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		if line == "" {
+			continue
+		}
+		tty, sid, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		result[tty] = sid
+	}
+	return result, nil
+}
+
+// SwitchClientTo runs "tmux switch-client -c <tty> -t <sessionID>",
+// retargeting the client attached at tty — distinct from AttachOrSwitch,
+// which always means "this process's own controlling client".
+func (t Tmux) SwitchClientTo(tty, sessionID string) error {
+	_, _, err := t.Runner.Run("tmux", "switch-client", "-c", tty, "-t", sessionID)
+	return err
+}
+
+// SelectWindow runs "tmux select-window -t <target>".
+func (t Tmux) SelectWindow(target string) error {
+	_, _, err := t.Runner.Run("tmux", "select-window", "-t", target)
+	return err
+}
+
+// SelectPane runs "tmux select-pane -t <target>" (bare, no "-Z").
+func (t Tmux) SelectPane(target string) error {
+	_, _, err := t.Runner.Run("tmux", "select-pane", "-t", target)
+	return err
+}
+
+// PanePID returns the pid of the pane identified by target, a
+// "<window>.<index>" string (e.g. "$3:cmd.0") — split on the last "."
+// into the window part and the pane index, same convention used
+// elsewhere in this codebase for assembling (never, until now,
+// disassembling) a full pane target. Returns "" (no error) if target has
+// no matching pane, including if the window can't be inspected at all.
+func (t Tmux) PanePID(target string) (string, error) {
+	windowTarget, index, ok := cutLastDot(target)
+	if !ok {
+		return "", nil
+	}
+
+	stdout, _, err := t.Runner.Run("tmux", "list-panes", "-t", windowTarget, "-F", "#{pane_index} #{pane_pid}")
+	if err != nil {
+		return "", nil
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		if line == "" {
+			continue
+		}
+		paneIndex, pid, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if paneIndex == index {
+			return pid, nil
+		}
+	}
+	return "", nil
+}
+
+// cutLastDot splits s at its last ".", mirroring tmux's own pane-separator
+// convention (a window target's pane index is everything after the final
+// "."). ok is false if s has no ".".
+func cutLastDot(s string) (before, after string, ok bool) {
+	i := strings.LastIndex(s, ".")
+	if i < 0 {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+// HasChildProcess runs "pgrep -P <pid>" and reports whether it exited 0
+// (meaning pid has at least one running child process). Never returns an
+// error: a failed/erroring pgrep means "no child", matching bash's
+// `pgrep ... >/dev/null 2>&1` being checked only for its exit status.
+func (t Tmux) HasChildProcess(pid string) bool {
+	_, _, err := t.Runner.Run("pgrep", "-P", pid)
+	return err == nil
+}
+
+// ZoomOff un-zooms windowTarget's pane if it's currently zoomed, porting
+// the original bash mt_zoom_off exactly: a no-op if windowTarget is empty
+// or its zoomed-flag can't be queried, and a toggle (tmux resize-pane -Z)
+// only when the flag reads "1".
+func (t Tmux) ZoomOff(windowTarget string) error {
+	return t.toggleZoom(windowTarget, "1")
+}
+
+// ZoomOn zooms windowTarget's pane if it isn't already, porting the
+// original bash mt_zoom_on exactly: a no-op if windowTarget is empty or
+// its zoomed-flag can't be queried, and a toggle (tmux resize-pane -Z)
+// only when the flag reads "0".
+func (t Tmux) ZoomOn(windowTarget string) error {
+	return t.toggleZoom(windowTarget, "0")
+}
+
+// toggleZoom reads windowTarget's #{window_zoomed_flag} and, only if it
+// equals triggerFlag, runs "tmux resize-pane -Z -t <windowTarget>" to
+// toggle it. A query error is treated as "nothing to toggle" (returns
+// nil), matching bash's "|| return 0" on the same query in both
+// mt_zoom_off and mt_zoom_on.
+func (t Tmux) toggleZoom(windowTarget, triggerFlag string) error {
+	if windowTarget == "" {
+		return nil
+	}
+	flag, err := t.DisplayMessage(windowTarget, "#{window_zoomed_flag}")
+	if err != nil {
+		return nil
+	}
+	if flag != triggerFlag {
+		return nil
+	}
+	_, _, err = t.Runner.Run("tmux", "resize-pane", "-Z", "-t", windowTarget)
+	return err
+}

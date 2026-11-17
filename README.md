@@ -84,4 +84,4 @@ mt help
 ```
 
 prints the full command list (`mt <name>`, `mt spawn`, `mt pr`, `mt ls`,
-`mt rm`, `mt install-hooks`).
+`mt rm`, `mt cmd`, `mt install-hooks`).
