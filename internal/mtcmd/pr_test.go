@@ -600,3 +600,132 @@ func TestPR_SameTitleWithMissingWorktree_RebuildsRatherThanErroring(t *testing.T
 		t.Errorf("gh Calls = none, want the PRHeadRef lookup to have run")
 	}
 }
+
+// mkWorktree creates the worktree directory for name, so PR's os.Stat
+// finds it and takes the "already exists, just re-attach" path.
+func mkWorktree(t *testing.T, repoRoot, name string) string {
+	t.Helper()
+	path := filepath.Join(repoRoot, ".claude", "worktrees", name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("creating worktree dir: %v", err)
+	}
+	return path
+}
+
+// A title is free text, so it can name a session the user created with
+// `mt <name>`. Without a check, PR skips its whole creation block (that
+// worktree exists), overwrites the session's description with "PR #420",
+// records no PR tie, and attaches — leaving a session on the wrong branch
+// that mt ls and the claude pane both call a PR review.
+func TestPR_TitleCollidingWithAnUnrelatedSession_ReturnsErrorAndChangesNothing(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+	worktreePath := mkWorktree(t, repoRoot, "my-feature")
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}},
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.UpsertSession("my-feature", "my own work", 1)
+	d.State.EnsureRepo("my-feature", repoRoot, worktreePath)
+
+	err := PR(d, ghutil.GH{Runner: ghRunner}, "420", "my-feature", repoRoot, false, 2)
+
+	want := "session 'my-feature' already exists and isn't PR 420"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	if got := d.State.Sessions[0].Description; got != "my own work" {
+		t.Errorf("Description = %q, want %q — an unrelated session must not be relabelled", got, "my own work")
+	}
+	if len(tmuxRunner.Calls) != 0 {
+		t.Errorf("tmux Calls = %+v, want none", tmuxRunner.Calls)
+	}
+	if len(ghRunner.Calls) != 0 {
+		t.Errorf("gh Calls = %+v, want none", ghRunner.Calls)
+	}
+}
+
+func TestPR_SameTitleRerunStillAttaches(t *testing.T) {
+	forceGhAvailable(t)
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	worktreePath := mkWorktree(t, repoRoot, "review-care-spike")
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}},
+	}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, {Stdout: "$1\n"},
+			{}, {}, {}, {}, {},
+		},
+	}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.UpsertSession("review-care-spike", "PR #420", 1)
+	d.State.EnsureRepoPR("review-care-spike", repoRoot, worktreePath, "420")
+
+	if err := PR(d, ghutil.GH{Runner: ghRunner}, "420", "review-care-spike", repoRoot, false, 2); err != nil {
+		t.Fatalf("PR returned error: %v, want nil — re-running the same command re-attaches", err)
+	}
+}
+
+// A session created by an older mt pr has no pr_number on its repo row, so
+// SessionForPR can't see it. mt generated that "pr-<n>" name itself, so it
+// still counts as holding the PR — otherwise the guard protects nobody who
+// upgrades.
+func TestPR_LegacyPRSessionWithoutPRNumber_StillBlocksANewTitle(t *testing.T) {
+	forceGhAvailable(t)
+	repoRoot := t.TempDir()
+	worktreePath := mkWorktree(t, repoRoot, "pr-420")
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}},
+	}
+	tmuxRunner := &executil.FakeRunner{}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.UpsertSession("pr-420", "PR #420", 1)
+	d.State.EnsureRepo("pr-420", repoRoot, worktreePath) // no PR number
+
+	err := PR(d, ghutil.GH{Runner: ghRunner}, "420", "review-spike", repoRoot, false, 2)
+
+	want := "PR 420 is already checked out as session 'pr-420'"
+	if err == nil || err.Error() != want {
+		t.Fatalf("PR error = %v, want %q", err, want)
+	}
+	if len(ghRunner.Calls) != 0 {
+		t.Errorf("gh Calls = %+v, want none", ghRunner.Calls)
+	}
+}
+
+func TestPR_LegacyPRSessionBareRerun_HealsTheMissingPRNumber(t *testing.T) {
+	forceGhAvailable(t)
+	setClaudeHome(t)
+	repoRoot := t.TempDir()
+	worktreePath := mkWorktree(t, repoRoot, "pr-420")
+
+	gitRunner := &executil.FakeRunner{
+		Queue: []executil.Response{{Stdout: repoRoot + "\n"}},
+	}
+	tmuxRunner := &executil.FakeRunner{
+		Queue: []executil.Response{
+			{Err: errors.New("no server running")}, {Stdout: "$1\n"},
+			{}, {}, {}, {}, {},
+		},
+	}
+	ghRunner := &executil.FakeRunner{}
+	d := newDeps(gitRunner, tmuxRunner)
+	d.State.UpsertSession("pr-420", "PR #420", 1)
+	d.State.EnsureRepo("pr-420", repoRoot, worktreePath)
+
+	if err := PR(d, ghutil.GH{Runner: ghRunner}, "420", "", repoRoot, false, 2); err != nil {
+		t.Fatalf("PR returned error: %v, want nil — a bare re-run must keep working", err)
+	}
+	if got := d.State.SessionForPR(repoRoot, "420"); got != "pr-420" {
+		t.Errorf("SessionForPR = %q, want %q — the re-run should record the tie", got, "pr-420")
+	}
+}

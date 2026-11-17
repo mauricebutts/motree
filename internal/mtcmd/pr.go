@@ -19,6 +19,28 @@ var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 // — a deliberately preserved typo, not a mistake to "fix".
 const prExplainPrompt = "Please give a high level explanation of this PR and it's business purpose"
 
+// prHolder returns the name of the session already holding prNumber in
+// repoRoot, or "".
+//
+// It falls back to the "pr-<prNumber>" name when state has no PRNumber
+// match. Sessions created before PRNumber existed carry no tie, so
+// State.SessionForPR cannot see them — but mt generated those names
+// itself, so a tracked "pr-<n>" with a row for this repo is that PR's
+// session. Without the fallback the duplicate guard would protect nobody
+// upgrading from an older build until they re-ran the bare form once.
+func prHolder(d *Deps, repoRoot, prNumber string) string {
+	if existing := d.State.SessionForPR(repoRoot, prNumber); existing != "" {
+		return existing
+	}
+	legacy := "pr-" + prNumber
+	for _, repo := range d.State.ReposFor(legacy) {
+		if repo.RepoPath == repoRoot {
+			return legacy
+		}
+	}
+	return ""
+}
+
 // PR checks prNumber out into its own session/worktree for review, named
 // title when one is given and "pr-<prNumber>" otherwise. The title
 // replaces the session name, the worktree directory and the state key
@@ -63,6 +85,19 @@ func PR(d *Deps, gh ghutil.GH, prNumber, title, cwd string, insideTmux bool, now
 	}
 	worktreePath := filepath.Join(repoRoot, ".claude", "worktrees", name)
 
+	holder := prHolder(d, repoRoot, prNumber)
+
+	// A title is free text, so it can name a session the user made with
+	// `mt <name>`. That session's worktree already exists, so without this
+	// check PR would skip its whole creation block, relabel the session
+	// "PR #<n>", record no PR tie, and attach — leaving the user looking
+	// at their own branch while mt ls and the claude pane both call it a
+	// PR review. Only titles are checked: the bare form's "pr-<n>" is mt's
+	// own namespace, and colliding with it means the same PR.
+	if title != "" && d.State.IsTracked(title) && holder != title {
+		return fmt.Errorf("session '%s' already exists and isn't PR %s", title, prNumber)
+	}
+
 	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
 		// Another session already holding this PR means a second worktree
 		// for the same branch, which git refuses halfway through with
@@ -71,8 +106,8 @@ func PR(d *Deps, gh ghutil.GH, prNumber, title, cwd string, insideTmux bool, now
 		// the os.Stat above keeps re-running the same invocation
 		// idempotent; the name comparison covers the case where state
 		// still holds the tie but the worktree was removed by hand.
-		if existing := d.State.SessionForPR(repoRoot, prNumber); existing != "" && existing != name {
-			return fmt.Errorf("PR %s is already checked out as session '%s'", prNumber, existing)
+		if holder != "" && holder != name {
+			return fmt.Errorf("PR %s is already checked out as session '%s'", prNumber, holder)
 		}
 
 		// gh's own stderr is the only thing that tells a missing PR

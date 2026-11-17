@@ -490,3 +490,40 @@ func TestMain_PR_TooManyArgs_IsUsageError(t *testing.T) {
 		t.Errorf("stderr = %q, want the usage line", res.stderr)
 	}
 }
+
+// The title becomes a path component under .claude/worktrees, and
+// filepath.Join cleans "..", so an unvalidated title escapes that
+// directory entirely — or, as ".", names the directory itself.
+func TestMain_PR_TitleThatEscapesTheWorktreeDir_IsUsageError(t *testing.T) {
+	for _, title := range []string{"../../escape", ".", "..", "foo/bar", "-b", "a\\b"} {
+		t.Run(title, func(t *testing.T) {
+			stubDir := t.TempDir()
+			writeStub(t, stubDir, "gh", ghStubCheckout)
+			writeStub(t, stubDir, "tmux", tmuxStub)
+
+			repoDir := prRepoWithCommit(t)
+			stateFile := filepath.Join(t.TempDir(), "state.json")
+			env := []string{
+				"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+				"HOME=" + t.TempDir(),
+				"MOTREE_STATE_FILE=" + stateFile,
+			}
+
+			res := runMt(t, repoDir, env, "pr", "420", title)
+
+			if res.exitCode != 1 {
+				t.Errorf("exit code = %d, want 1 (stdout: %s)", res.exitCode, res.stdout)
+			}
+			if !strings.Contains(res.stderr, "Usage: mt") {
+				t.Errorf("stderr = %q, want the usage line", res.stderr)
+			}
+			if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+				t.Errorf("state file exists, want no session created")
+			}
+			if entries, _ := os.ReadDir(repoDir); len(entries) != 1 {
+				// .git only — nothing new at the repo root
+				t.Errorf("repo root entries = %d, want 1 (.git only); a worktree escaped", len(entries))
+			}
+		})
+	}
+}

@@ -401,3 +401,30 @@ func TestSaveLoad_RoundTripPreservesPRNumber(t *testing.T) {
 		t.Errorf("loaded PRNumber = %q, want %q", got, "420")
 	}
 }
+
+func TestEnsureRepoPR_UpdatesPRNumberOnAnExistingRow(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("pr-420", "PR #420", 1)
+	s.EnsureRepo("pr-420", "/repo1", "/wt1") // how older builds wrote it: no PR number
+
+	s.EnsureRepoPR("pr-420", "/repo1", "/wt1", "420")
+
+	// Without the update the row stays PR-less forever, so the duplicate
+	// guard never protects a session created before pr_number existed.
+	want := []Repo{{RepoPath: "/repo1", WorktreePath: "/wt1", PRNumber: "420"}}
+	if got := s.ReposFor("pr-420"); !reflect.DeepEqual(got, want) {
+		t.Errorf("ReposFor = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnsureRepoPR_DoesNotChangeTheWorktreePathOfAnExistingRow(t *testing.T) {
+	s := &State{}
+	s.UpsertSession("pr-420", "PR #420", 1)
+	s.EnsureRepo("pr-420", "/repo1", "/wt1")
+
+	s.EnsureRepoPR("pr-420", "/repo1", "/wt1-different", "420")
+
+	if got := s.ReposFor("pr-420")[0].WorktreePath; got != "/wt1" {
+		t.Errorf("WorktreePath = %q, want %q (EnsureRepo's no-clobber rule still holds)", got, "/wt1")
+	}
+}

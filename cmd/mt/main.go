@@ -147,10 +147,10 @@ mt pr <pr_number> [<title>]
 
     <title> names the session (and its worktree) instead of pr-<pr_number>;
     the description stays "PR #<pr_number>" so mt ls still shows which PR
-    it is. A title of only digits is rejected, so a stray second number
-    can't become a session name. If another session in this repo already
-    holds <pr_number>, mt refuses and names that session rather than
-    cutting a second worktree for the same branch.
+    it is. It must be a plain name — not a path, and not all digits, which
+    would read as a second PR number. mt refuses, rather than creating
+    anything, if <title> already names some other session, or if another
+    session in this repo already holds <pr_number>.
 
 mt ls
     List tracked sessions and attach to the one you pick.
@@ -441,12 +441,9 @@ func runPR(args []string) error {
 	}
 	prNumber := args[0]
 
-	// An all-digits title would read as a second PR number: `mt pr 420 421`
-	// silently naming the session "421" is a typo the user can't see, so
-	// it's a usage error rather than a valid (if odd) name.
 	title := ""
 	if len(args) == 2 {
-		if args[1] == "" || isAllDigits(args[1]) {
+		if !validSessionTitle(args[1]) {
 			usage()
 			return errUsageShown
 		}
@@ -469,6 +466,30 @@ func runPR(args []string) error {
 
 	// Same as runCreate: PR saves before it attaches, so nothing to do here.
 	return mtcmd.PR(d, gh, prNumber, title, cwd, insideTmux, now)
+}
+
+// validSessionTitle reports whether s is usable as `mt pr`'s session title.
+//
+// The title becomes a path component under .claude/worktrees, a tmux
+// session name and a state key all at once, so it has to be a plain name.
+// filepath.Join cleans "..", which means an unchecked "../../escape" would
+// put the worktree outside .claude/worktrees entirely and "." would make
+// it that directory itself — so path-ish titles are rejected here rather
+// than sanitized into something the user did not ask for. An all-digits
+// title is rejected too: `mt pr 420 421` reads as a second PR number, and
+// silently naming the session "421" is a typo the user cannot see.
+func validSessionTitle(s string) bool {
+	switch {
+	case s == "" || isAllDigits(s):
+		return false
+	case strings.HasPrefix(s, "-"): // would parse as a flag elsewhere
+		return false
+	case strings.ContainsAny(s, `/\`) || strings.Contains(s, ".."):
+		return false
+	case s == ".":
+		return false
+	}
+	return true
 }
 
 // isAllDigits reports whether s is non-empty and every byte is 0-9.

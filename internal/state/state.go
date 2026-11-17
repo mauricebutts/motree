@@ -123,12 +123,19 @@ func (s *State) EnsureRepo(sessionName, repoPath, worktreePath string) {
 // EnsureRepoPR is EnsureRepo with the repo row also recording which PR it
 // was checked out for. Separate from EnsureRepo rather than an extra
 // parameter on it so Create and Spawn — which have no PR — stay untouched.
+//
+// Unlike EnsureRepo it is not a pure no-op on an existing row: it still
+// leaves WorktreePath alone, but it does set PRNumber. That update is what
+// heals a row written before PRNumber existed — otherwise a session
+// created by an older `mt pr` would stay untied to its PR forever, and the
+// duplicate guard would never see it.
 func (s *State) EnsureRepoPR(sessionName, repoPath, worktreePath, prNumber string) {
 	for i, sess := range s.Sessions {
 		if sess.Name == sessionName {
-			for _, repo := range sess.Repos {
+			for j, repo := range sess.Repos {
 				if repo.RepoPath == repoPath {
-					return // Already exists, no-op
+					s.Sessions[i].Repos[j].PRNumber = prNumber
+					return
 				}
 			}
 			s.Sessions[i].Repos = append(s.Sessions[i].Repos, Repo{
