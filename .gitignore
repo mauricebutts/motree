@@ -5,3 +5,7 @@
 # diffs) — never meant to be committed; superpowers:subagent-driven-development
 # deletes it itself once a plan's final review is clean.
 /.superpowers/
+
+# PR description drafts written by the visual-pr skill — scratch, the real
+# copy lives on the PR itself.
+/.humanlayer/
